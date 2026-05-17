@@ -1,0 +1,58 @@
+{
+  "GET_STATS_DATA": {
+    "RESULT": {
+      "STATUS": 0,
+      "ERROR_MSG": "正常に終了しました。",
+      "DATE": "2026-05-17T03:00:00.000+09:00"
+    },
+    "PARAMETER": {
+      "LANG": "J",
+      "STATS_DATA_ID": "0003448237",
+      "DATA_FORMAT": "J",
+      "METAGET_FLG": "Y"
+    },
+    "STATISTICAL_DATA": {
+      "RESULT_INF": {
+        "TOTAL_NUMBER": 2,
+        "FROM_NUMBER": 1,
+        "TO_NUMBER": 2
+      },
+      "TABLE_INF": {
+        "@id": "0003448237",
+        "STAT_NAME": {"@code": "00200524", "$": "人口推計"},
+        "GOV_ORG": {"@code": "00200", "$": "総務省"},
+        "STATISTICS_NAME": "人口推計 各年10月1日現在人口",
+        "TITLE": {"@no": "001", "$": "年齢（5歳階級）、男女別人口"}
+      },
+      "CLASS_INF": {
+        "CLASS_OBJ": [
+          {
+            "@id": "tab",
+            "@name": "表章項目",
+            "CLASS": {"@code": "020", "@name": "総人口", "@level": "1"}
+          },
+          {
+            "@id": "cat01",
+            "@name": "男女別",
+            "CLASS": [
+              {"@code": "000", "@name": "男女計", "@level": "1"},
+              {"@code": "001", "@name": "男", "@level": "1"}
+            ]
+          },
+          {
+            "@id": "time",
+            "@name": "時間軸（年次）",
+            "CLASS": {"@code": "2020000000", "@name": "2020年", "@level": "1"}
+          }
+        ]
+      },
+      "DATA_INF": {
+        "NOTE": {"@char": "-", "$": "数字がないもの"},
+        "VALUE": [
+          {"@tab": "020", "@cat01": "000", "@time": "2020000000", "@unit": "千人", "$": "126146"},
+          {"@tab": "020", "@cat01": "001", "@time": "2020000000", "@unit": "千人", "$": "61350"}
+        ]
+      }
+    }
+  }
+}

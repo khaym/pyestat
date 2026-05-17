@@ -1,0 +1,16 @@
+.tasks
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+dist/
+build/
+*.egg-info/
+.env
+.env.local
+.env.*.local
+
+# dev
+.claude
+.devcontainer
+CLAUDE.local.md

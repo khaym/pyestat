@@ -1,0 +1,59 @@
+# pre-commit hook configuration
+# Run manually: pre-commit run --all-files
+# Docs: https://pre-commit.com
+
+repos:
+  # -------------------------------------------------------
+  # Hygiene: trailing whitespace, EOF newline, YAML syntax,
+  # large-file guard
+  # -------------------------------------------------------
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      # NOTE: check-added-large-files is intentionally omitted until the repo
+      # has at least one commit. Its LFS-attribute lookup runs `git check-attr`
+      # against HEAD, which fails fatally on an unborn HEAD. Add it back after
+      # the initial commit lands.
+
+  # -------------------------------------------------------
+  # Secret scanning: detect-secrets
+  #
+  # Chosen over gitleaks because:
+  #   - Pure Python; installable via uv tool install with no
+  #     external binaries
+  #   - Baseline workflow: known-safe values are explicitly
+  #     marked in .secrets.baseline, so the check never
+  #     produces false-positive noise after the first scan
+  #   - Pluggable detectors cover high-entropy strings as
+  #     well as known token formats (AWS, GitHub, etc.)
+  # -------------------------------------------------------
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.5.0
+    hooks:
+      - id: detect-secrets
+        args:
+          - "--baseline"
+          - ".secrets.baseline"
+          - "--exclude-files"
+          - '\\.env$'
+          - "--exclude-files"
+          - '\\.env\\..*'
+          - "--exclude-files"
+          - 'uv\\.lock$'
+
+  # -------------------------------------------------------
+  # Local guard: catch any staged file that contains a value
+  # currently held in .env. Closes the gap where detect-secrets
+  # ignores plain hex tokens (e.g. e-Stat appIds look like git
+  # SHAs and slip through generic entropy heuristics).
+  # -------------------------------------------------------
+  - repo: local
+    hooks:
+      - id: no-dotenv-leaks
+        name: Reject files containing values from .env
+        entry: scripts/check-dotenv-leaks.sh
+        language: system
+        pass_filenames: true

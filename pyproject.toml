@@ -1,0 +1,34 @@
+[project]
+name = "pyestat"
+version = "0.1.0"
+description = "Python client for the e-Stat API (Japanese government statistics portal) with structured outputs for LLMs and data scientists."
+readme = "README.md"
+authors = [
+    { name = "khaym" }
+]
+requires-python = ">=3.11"
+dependencies = [
+    "httpx>=0.28.1",
+    "pydantic>=2.13.4",
+]
+
+[build-system]
+requires = ["uv_build>=0.11.14,<0.12.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+    "python-dotenv>=1.2.2",
+]
+
+[tool.uv]
+required-version = ">=0.11.14"
+exclude-newer = "P3D"
+index-strategy = "first-index"
+no-build-isolation-package = []
+
+[tool.pytest.ini_options]
+markers = [
+    "integration: tests that hit the live e-Stat API (require ESTAT_APP_ID)",
+]
