@@ -143,10 +143,19 @@ class TransformContext:
       keying axis exists.
     - StandardCodeMapper consults its own Registry, not ctx.
     """
-    class_inf: Mapping[str, Sequence[ClassDef]]  # axis @id → CLASS_INF entries (@code, @name, @parentCode, @level)
-    axes_meta: Mapping[str, AxisMeta]             # axis @id → @name (raw + normalized) and structural metadata
-    stats_data_id: str                             # for logging / error context
+    stats_data_id: str                                    # for logging / error context
+    class_inf: Mapping[str, tuple[dict[str, Any], ...]]   # axis @id → CLASS entries with @ stripped (@code, @name, @parentCode, @level, ...)
+    axes_meta: Mapping[str, str]                          # axis @id → raw @name
 ```
+
+CLASS entries are kept as plain dicts (with the `@` prefix already
+stripped by Layer 2) rather than a typed `ClassDef` dataclass — the
+field shape varies across tables (some carry `@unit`, others
+`@parentCode`, some neither), so a dataclass would either over-
+constrain or amount to the same `dict[str, Any]`. Likewise
+`axes_meta` is a plain `str` of the raw axis name rather than an
+`AxisMeta` dataclass — Transformers that need the normalized form
+compute it locally via the `Fingerprint` helper.
 
 MVP implementations:
 

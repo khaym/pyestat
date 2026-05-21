@@ -103,17 +103,37 @@ matching.
 
 ### B. No-Rule Behavior
 
-**Decision: Layered fallback.**
+**Decision: Layered fallback with auto-resolution.**
 
 - `rule=None` — raw mode. Rows are returned as `axis_id`-keyed dicts
   with original codes; no normalization. Always works.
-- `rule="auto"` — heuristic mode. The library substitutes labels
-  using CLASS_INF and applies safe defaults (labeled keys instead of
-  axis IDs). No standard-code mapping and no aggregate exclusion.
-- Explicit `rule=...` — full transformation per the rule.
+- `rule="auto"` (default) — walks the resolution chain
+  (user > project > builtin, Decision E); applies the first matching
+  rule, or falls back to `"heuristic"` when nothing matched.
+- `rule="heuristic"` — label substitution only. Each axis with a
+  `CLASS` lookup gets an additive `{axis_id}_label` field alongside
+  the raw code; axis-ID keys are preserved so downstream filters that
+  work on raw codes keep working. No standard-code mapping and no
+  aggregate exclusion.
+- Explicit `rule=Rule(...)` — full transformation per the supplied
+  rule, bypassing the resolution chain.
 
 This avoids forcing rule authoring upfront while preserving the
-value of rules when they are present.
+value of rules when they are present. The default `"auto"` makes
+the bundled rules' value reach the un-decorated `get_stats_data(id)`
+call; the explicit `"heuristic"` exists for callers who want a
+stable shape regardless of which built-ins ship in a given
+pyestat version.
+
+*Drift note (2026-05-21):* an earlier draft folded `"auto"` and
+`"heuristic"` into a single mode. They were split during task #7
+implementation so the default could pick up bundled rules
+automatically without changing the semantics of explicit
+`"heuristic"`. The output shape of `"heuristic"` also differs from
+that draft: the original wording said "labeled keys instead of
+axis IDs", but the implementation keeps both because dropping
+axis-ID keys would silently break any downstream filter written
+against the raw codes.
 
 ### C. Rule Description Format
 
