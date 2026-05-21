@@ -15,6 +15,8 @@ from typing import Any
 
 import httpx
 
+from pyestat.errors import HttpRetryExhaustedError
+
 
 DEFAULT_BASE_URL = "https://api.e-stat.go.jp/rest/3.0/app/json"
 
@@ -43,33 +45,6 @@ class ProgressEvent:
     total_pages: int | None
     rows_fetched: int
     rows_total: int | None
-
-
-class HttpRetryExhaustedError(Exception):
-    """Raised when every retry attempt failed for the same request.
-
-    Distinct from ``httpx.HTTPStatusError`` so that callers can tell a
-    transient outage ("e-Stat is down") apart from a deterministic
-    client-side mistake ("you sent a 400").
-    """
-
-    def __init__(
-        self,
-        *,
-        attempts: int,
-        last_status: int | None,
-        last_exc: Exception | None,
-    ) -> None:
-        suffix = (
-            f"HTTP {last_status}" if last_status is not None
-            else f"{type(last_exc).__name__}: {last_exc}"
-        )
-        super().__init__(
-            f"e-Stat HTTP request failed after {attempts} attempts ({suffix})"
-        )
-        self.attempts = attempts
-        self.last_status = last_status
-        self.last_exc = last_exc
 
 
 class EstatHttpClient:
