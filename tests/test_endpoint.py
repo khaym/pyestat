@@ -107,7 +107,9 @@ class TestParseStatsData:
         # comes from an actual e-Stat response, so passing it proves the
         # parser handles the *real* @ / $ wire format, not a strawman.
         client, _ = _make_client(_load_fixture("get_stats_data_population_sample.json"))
-        resp = client.get_stats_data("0003448237")
+        # ``rule=None`` keeps this test focused on the Layer-2 parse —
+        # auto-mode label substitution is exercised in test_endpoint_rules.py.
+        resp = client.get_stats_data("0003448237", rule=None)
 
         assert resp.stats_data_id == "0003448237"
         assert resp.total_number == 2

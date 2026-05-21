@@ -59,6 +59,23 @@ class EstatApiError(EstatError):
         self.message = message
 
 
+class AmbiguousRuleError(EstatError):
+    """Two rules at the same precedence layer matched the same response.
+
+    Surfacing the conflict (rather than silently picking one) prevents
+    a typo in a bundled rule file from quietly masking a user's
+    project-local rule.
+    """
+
+    def __init__(self, *, stats_data_id: str, matched_rules: list) -> None:
+        super().__init__(
+            f"Multiple rules matched {stats_data_id}: "
+            f"{[r.match.statsCode for r in matched_rules]}"
+        )
+        self.stats_data_id = stats_data_id
+        self.matched_rules = matched_rules
+
+
 class TooManyRowsError(EstatError):
     """The requested table exceeds the caller-supplied ``max_rows`` cap.
 

@@ -12,8 +12,8 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable, Iterator, Mapping
-from dataclasses import dataclass
-from typing import Any
+from dataclasses import dataclass, replace
+from typing import Any, Literal
 
 from pyestat._http import EstatHttpClient, ProgressEvent
 from pyestat.errors import EstatApiError, TooManyRowsError
@@ -173,10 +173,21 @@ class EstatClient:
         self,
         stats_data_id: str,
         *,
+        rule: "Rule | Literal['auto'] | None" = "auto",
         max_rows: int | None = None,
         progress: Callable[[ProgressEvent], None] | None = None,
     ) -> StatsDataResponse:
         """Fetch one table, walking ``NEXT_KEY`` until all rows are pulled.
+
+        ``rule`` selects the transformation mode (Decision B):
+
+        * ``"auto"`` (default) — heuristic label substitution; rows get
+          a ``{axis_id}_label`` field for every axis with a CLASS lookup.
+          No standard-code mapping and no value typing.
+        * ``None`` — raw mode. Returns Layer 2's untransformed flattened
+          rows verbatim.
+        * :class:`Rule` — full declared transformation via the Layer 3
+          Transformer pipeline.
 
         When ``max_rows`` is set, a cheap ``cntGetFlg=Y`` probe runs first
         and the call raises :class:`TooManyRowsError` before any data page
@@ -198,12 +209,17 @@ class EstatClient:
         pages = list(self.iter_stats_data_pages(stats_data_id, progress=progress))
         first = pages[0]
         values = tuple(v for p in pages for v in p.values)
+        # Imported lazily so the (L3 → L2) dependency direction stays
+        # one-way: ``_apply.py`` consumes ``ClassObj`` from this module.
+        from pyestat._apply import apply_rule
+
+        transformed = apply_rule(values, first.class_objs, stats_data_id, rule)
         return StatsDataResponse(
             stats_data_id=stats_data_id,
             total_number=first.total_number,
             table_inf=first.table_inf,
             class_objs=first.class_objs,
-            values=values,
+            values=transformed,
         )
 
     def iter_stats_data_pages(
