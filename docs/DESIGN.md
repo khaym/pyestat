@@ -89,10 +89,17 @@ Trade-offs against pyestat's LLM-oriented goals:
 **Decision: Hybrid — `statsCode` narrows the candidate set, structural
 fingerprint validates the match.**
 
-The fingerprint is the set of axis `@id` values plus a stable summary
-of axis names. The narrow-then-validate order avoids the false
-positives of fingerprint-only matching and the brittleness of
-`statsDataId`-only matching.
+The fingerprint is the set of axis `@id` values plus a digest of
+normalized axis names. Name normalization handles the observed drift
+across tables (e.g. `"時間軸（年月日現在）"` vs `"時間軸(年次)"`):
+inputs are NFKC-normalized (collapsing full-width / half-width
+parenthesis variants), stripped of any trailing parenthesized suffix,
+and lower-cased before being hashed — leaving a stable concept stem
+(`"時間軸"`).
+
+The narrow-then-validate order avoids the false positives of
+fingerprint-only matching and the brittleness of `statsDataId`-only
+matching.
 
 ### B. No-Rule Behavior
 
@@ -119,9 +126,10 @@ Rationale:
 - A Python callable escape hatch (e.g. `value_transform: !python ...`)
   covers cases the declarative form cannot express.
 
-### D. Rule Scope (OPEN — to be resolved during #7)
+### D. Rule Scope
 
-**Direction: Start minimal, expand stepwise.**
+**Decision: Start minimal, expand stepwise. MVP schema confirmed
+during #7 design phase (2026-05-20).**
 
 Two framings were considered:
 
@@ -130,16 +138,64 @@ Two framings were considered:
 2. Start with a minimum-viable schema and grow it based on actual
    rule-authoring experience.
 
-The user chose (2). Proposed minimum-viable set:
+The user chose (2).
 
-- **Required**: declare which axis is `time`, which is `area`;
-  declare the value type.
-- **Optional (initial)**: axis rename, label augmentation, aggregate
-  exclusion, standard-code mapping, value transformation.
+**Required fields (MVP):**
 
-The concrete MVP schema and the expansion roadmap will be finalized
-inside task #7 when the engine is being built. Each new field added
-should be motivated by an actual rule that needs it.
+- `schema_version: "1"` — the rule file's schema version. Additive
+  expansions (new optional fields, new transformer keywords) keep
+  this at `"1"`; breaking changes increment it and the Rule loader
+  routes through a migration. See ARCHITECTURE.md for the loader
+  contract.
+- `match.statsCode` — narrows the candidate set (Decision A); the
+  fingerprint is computed and validated by the engine and not stored
+  in the rule file.
+- `axes.time.id` — which axis `@id` carries time semantics.
+- `axes.time.format` — name of a built-in time parser (see below).
+- `axes.area.id` — which axis `@id` carries area semantics. Optional;
+  some tables (e.g. GDP) have no area axis.
+- `value.type` — `number` or `string`. Conditional (per-row variable
+  type, as in the trade table) is deferred to the expansion list.
+
+**Built-in time parsers shipped at MVP:**
+
+| `format` value | Input shape | Output | Granularity |
+|---|---|---|---|
+| `monthly_e_stat` | 10-digit code | `"YYYY-MM"` | `monthly` |
+| `quarterly_e_stat` | 5-digit code | `"YYYY-Qn"` (convention) | `quarterly` |
+| `yearly` | 4-digit year | `"YYYY"` | `yearly` |
+
+The output row preserves the raw code and adds the normalized value
+and granularity:
+
+```python
+{
+    "time_code": "2020010000",      # raw e-Stat code
+    "time": "2020-01",              # normalized (ISO 8601 leaning)
+    "time_granularity": "monthly",  # metadata for caller-side aggregation
+    ...
+}
+```
+
+ISO 8601 has no quarter notation; `"YYYY-Qn"` is a widely-recognized
+convention preferred over the heavier `YYYY-MM-DD/YYYY-MM-DD` period
+form. LLMs read it without difficulty.
+
+**Why `area` is not in MVP:** the same need (cross-table region
+joining) is acknowledged but observed variance in `area` is narrower
+than in `time`. Promoted to MVP when a concrete rule needs it.
+
+**Expansion candidates (added when an actual rule needs them, not
+on speculation):**
+
+| Extension | Motivating table | Sketch |
+|---|---|---|
+| `value.type: conditional` | Trade statistics | Per-row value type keyed off another axis (`cat02` → unit/quantity/amount) |
+| `axes.<id>.exclude_aggregate` | All | Drop "total / aggregate" code rows |
+| `axes.<id>.standard_code` | All | Map to ISO 8601 / JIS X 0402 / ISO 3166 (task #4) |
+| `axes.<id>.rename` | All | `cat01 → commodity` for readability |
+| `axes.area.format` | TBD | Same shape as `axes.time.format`; promote when needed |
+| `value.transform: !python ...` | Edge | Callable escape hatch (Decision C) |
 
 ### E. Rule Storage Layers
 
@@ -160,23 +216,74 @@ bundled rules without forking.
 Tracked as task #8. The Skill should land after the engine and the
 bundled rules ship in #7, so it has a stable generation target.
 
+### G. Endpoint Coverage
+
+**Decision: Three JSON endpoints — `getStatsData`, `getMetaInfo`,
+`getStatsList`. Defer `getSimpleStatsData` (CSV) and `getDataCatalog`.**
+
+| Endpoint | Included | Reason |
+|---|---|---|
+| `getStatsData` (JSON) | Yes | Core data path |
+| `getMetaInfo` | Yes | Enables fingerprint validation (Decision A) and pre-fetch row-count checks without downloading data |
+| `getStatsList` | Yes | Discovery is a frequent LLM / data-scientist workflow when `statsDataId` is unknown |
+| `getSimpleStatsData` (CSV) | No | Context section ruled CSV out (hierarchy loss). Carrying both would double the rule surface area |
+| `getDataCatalog` | No | No identified use case yet |
+
+`cntGetFlg=Y` is a query option on `getStatsData`, not a separate
+endpoint, and is used internally for the row-count safety check
+(Decision I).
+
+### H. Execution Model
+
+**Decision: Sync only at MVP. Confine HTTP I/O so an async client
+can be added later without touching transformation logic.**
+
+Rationale:
+
+- Primary users (Jupyter, LLM tool calls, scripts) want sync APIs.
+- `getStatsData` pagination is `NEXT_KEY`-serialized, so async gives
+  no speedup for the dominant slow case (large single-table fetches).
+- Parallel multi-table fetches are achievable from caller code with
+  `concurrent.futures`.
+- httpx exposes symmetric sync/async APIs, so a thin `EstatHttpClient`
+  (sync) can later be paired with `AsyncEstatHttpClient` reusing rule
+  application, fingerprint matching, and page assembly verbatim.
+
+### I. Pagination and HTTP Behavior
+
+**Pagination:**
+
+- `get_stats_data(stats_data_id, max_rows=None)` — fetches all pages
+  by default (R-style). Pre-fetches the row count via `cntGetFlg=Y`;
+  if `max_rows` is set and the table exceeds it, raises
+  `TooManyRowsError` before downloading data.
+- `max_rows=None` opts out of the safety check ("commit to fetching
+  everything").
+- `iter_stats_data_pages(stats_data_id)` — low-level page-at-a-time
+  iterator for progress reporting and streaming use cases.
+
+**HTTP:**
+
+- *Timeouts*: `connect=10s`, `read=60s` (e-Stat is observed to be
+  slow on large tables). Caller-overridable.
+- *Retry*: 3 attempts with exponential backoff (0.5s → 1s → 2s) and
+  jitter on 5xx, connection failure, timeout, and the transient 4xx
+  codes 408 (Request Timeout) and 429 (Too Many Requests). Other 4xx
+  responses and e-Stat logical errors (HTTP 200 with
+  `RESULT.STATUS != 0`) fail immediately — they are deterministic,
+  retrying wastes quota.
+- *Progress*: optional `progress: Callable[[ProgressEvent], None]`
+  parameter; `ProgressEvent` carries
+  `{page, total_pages, rows_fetched, rows_total}`. No tqdm dependency
+  — callers can route into tqdm or any other reporter.
+- *Rate limiting*: e-Stat publishes no rate limit. No client-side
+  inter-page sleep at MVP. If 429 is ever observed, the retry layer
+  absorbs it.
+
 ## Open Questions (Carried to #7)
 
-These were not resolved during the Phase 0 discussion and must be
-decided during #7's design phase before implementation:
-
-- **Execution model**: sync only, async only, or both? If both, at
-  which layer is the sync/async split made?
-- **HTTP behavior**: retry policy (e.g. exponential backoff), default
-  timeout, progress reporting for multi-page fetches.
-- **Pagination UX**: R-style auto-fetch-all by default, or explicit
-  `limit` / `start_position`? Iterator vs. eager list.
-- **Endpoint coverage**: which endpoints ship in the rewrite —
-  `getStatsData` (JSON), `getSimpleStatsData` (CSV), `getMetaInfo`,
-  `getStatsList`, `getDataCatalog`?
-- **Concrete MVP rule schema**: which fields land in the initial
-  release vs. the deferred-to-later list (Decision D's stepwise
-  roadmap).
+All resolved during the #7 design phase on 2026-05-20. See revised
+Decision D and new Decisions G, H, I above.
 
 ## Related Tasks
 
