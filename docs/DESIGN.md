@@ -161,17 +161,22 @@ The user chose (2).
 
 | `format` value | Input shape | Output | Granularity |
 |---|---|---|---|
-| `monthly_e_stat` | 10-digit code | `"YYYY-MM"` | `monthly` |
-| `quarterly_e_stat` | 5-digit code | `"YYYY-Qn"` (convention) | `quarterly` |
-| `yearly` | 4-digit year | `"YYYY"` | `yearly` |
+| `monthly_e_stat` | 10-digit `YYYY00MMMM` (month digits repeated) | `"YYYY-MM"` | `monthly` |
+| `quarterly_e_stat` | 10-digit `YYYY00<start_mm><end_mm>` (e.g. `0103` → Q1) | `"YYYY-Qn"` (convention) | `quarterly` |
+| `yearly` | 10-digit `YYYY000000`, or bare 4-digit `YYYY` | `"YYYY"` | `yearly` |
+
+Shapes were pinned against the live API during the #7 build (see
+`tests/test_time.py`); earlier drafts of this table guessed 5-digit
+quarterly and 4-digit yearly inputs, neither of which e-Stat actually
+returns.
 
 The output row preserves the raw code and adds the normalized value
 and granularity:
 
 ```python
 {
-    "time_code": "2020010000",      # raw e-Stat code
-    "time": "2020-01",              # normalized (ISO 8601 leaning)
+    "time_code": "2022000101",      # raw e-Stat code
+    "time": "2022-01",              # normalized (ISO 8601 leaning)
     "time_granularity": "monthly",  # metadata for caller-side aggregation
     ...
 }
