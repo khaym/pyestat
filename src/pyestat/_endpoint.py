@@ -170,8 +170,8 @@ class EstatClient:
         # Imported lazily to keep the import graph one-way: the rule
         # subsystem may depend on the endpoint module, but not the
         # other way around at module-import time.
-        from pyestat._builtin_rules import load_builtin_rules
-        from pyestat._rule_manager import RuleManager
+        from pyestat._engine.builtin import load_builtin_rules
+        from pyestat._engine.manager import RuleManager
 
         resolved_builtins = list(builtin_rules) if builtin_rules is not None else load_builtin_rules()
         self._rule_manager = RuleManager(builtin=resolved_builtins)
@@ -231,7 +231,7 @@ class EstatClient:
         )
         # Imported lazily so the (L3 → L2) dependency direction stays
         # one-way: ``_apply.py`` consumes ``ClassObj`` from this module.
-        from pyestat._apply import apply_rule
+        from pyestat._engine.apply import apply_rule
 
         resolved = self._resolve_rule(raw, rule)
         transformed = apply_rule(values, first.class_objs, stats_data_id, resolved)

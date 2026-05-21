@@ -13,8 +13,8 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from pyestat._rule import Rule
-from pyestat._rule_loader import YamlRuleLoader
+from pyestat._engine.rule import Rule
+from pyestat._engine.loader import YamlRuleLoader
 
 
 # Common minimum-valid rule body, reused with mutations.

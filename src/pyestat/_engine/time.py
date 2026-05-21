@@ -25,7 +25,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from pyestat._registry import Registry
+from pyestat._engine.registry import Registry
 
 
 @dataclass(frozen=True)

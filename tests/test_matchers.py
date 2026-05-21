@@ -10,8 +10,8 @@ from __future__ import annotations
 import pytest
 
 from pyestat._endpoint import ClassObj, StatsDataResponse
-from pyestat._matchers import FingerprintMatcher, StatsCodeMatcher
-from pyestat._rule import Rule
+from pyestat._engine.matchers import FingerprintMatcher, StatsCodeMatcher
+from pyestat._engine.rule import Rule
 
 
 def _resp(

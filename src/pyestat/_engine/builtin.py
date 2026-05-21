@@ -10,8 +10,8 @@ from __future__ import annotations
 from importlib import resources
 from pathlib import Path
 
-from pyestat._rule import Rule
-from pyestat._rule_loader import YamlRuleLoader
+from pyestat._engine.rule import Rule
+from pyestat._engine.loader import YamlRuleLoader
 
 
 def load_builtin_rules() -> list[Rule]:

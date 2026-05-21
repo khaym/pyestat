@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import pytest
 
-from pyestat._registry import Registry, RegistryKeyError
-from pyestat._time import TIME_PARSERS
+from pyestat._engine.registry import Registry, RegistryKeyError
+from pyestat._engine.time import TIME_PARSERS
 
 
 class TestRegistry:

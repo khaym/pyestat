@@ -12,8 +12,8 @@ from __future__ import annotations
 from typing import Protocol
 
 from pyestat._endpoint import StatsDataResponse
-from pyestat._fingerprint import Fingerprint
-from pyestat._rule import Rule
+from pyestat._engine.fingerprint import Fingerprint
+from pyestat._engine.rule import Rule
 
 
 class Matcher(Protocol):
@@ -45,7 +45,7 @@ class FingerprintMatcher:
     DESIGN.md Decision A specifies a name-digest component in addition
     to the axis-id set; at MVP only the axis-id set is consulted
     because rule files do not yet carry a name-digest claim. The
-    :class:`pyestat._fingerprint.Fingerprint` instance is built up
+    :class:`pyestat._engine.fingerprint.Fingerprint` instance is built up
     front so a future "rule carries an expected digest" extension
     plugs in without reshaping this Matcher.
     """

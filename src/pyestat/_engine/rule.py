@@ -43,7 +43,7 @@ class TimeAxisRule(_Strict):
     """Specifies which axis carries time semantics and how to parse it.
 
     ``format`` names a parser registered in
-    :data:`pyestat._time.TIME_PARSERS`. The string is not validated
+    :data:`pyestat._engine.time.TIME_PARSERS`. The string is not validated
     at load time — see the module docstring for the rationale.
     """
 

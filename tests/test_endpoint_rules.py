@@ -25,7 +25,7 @@ import httpx
 
 from pyestat._endpoint import EstatClient
 from pyestat._http import EstatHttpClient
-from pyestat._rule import Rule
+from pyestat._engine.rule import Rule
 
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures"

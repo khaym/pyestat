@@ -17,8 +17,8 @@ from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from pyestat._rule import Rule
-from pyestat._time import TIME_PARSERS
+from pyestat._engine.rule import Rule
+from pyestat._engine.time import TIME_PARSERS
 
 
 Row = Mapping[str, Any]

@@ -8,7 +8,7 @@ refactor cannot accidentally re-introduce the false-mismatch problem.
 from __future__ import annotations
 
 from pyestat._endpoint import ClassObj, StatsDataResponse
-from pyestat._fingerprint import Fingerprint
+from pyestat._engine.fingerprint import Fingerprint
 
 
 def _resp(*pairs: tuple[str, str]) -> StatsDataResponse:

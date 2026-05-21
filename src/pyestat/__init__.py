@@ -9,7 +9,7 @@ Public surface spans all four layers:
 * Layer 3 — :class:`Rule`, :func:`load_builtin_rules`.
 * Errors — :class:`EstatError` and its leaves.
 """
-from pyestat._builtin_rules import load_builtin_rules
+from pyestat._engine.builtin import load_builtin_rules
 from pyestat._endpoint import (
     ClassObj,
     EstatClient,
@@ -19,7 +19,7 @@ from pyestat._endpoint import (
     StatsListResponse,
 )
 from pyestat._http import EstatHttpClient, ProgressEvent
-from pyestat._rule import Rule
+from pyestat._engine.rule import Rule
 from pyestat.errors import (
     AmbiguousRuleError,
     EstatApiError,

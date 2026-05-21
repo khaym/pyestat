@@ -12,7 +12,7 @@ from typing import Any
 
 import yaml
 
-from pyestat._rule import Rule
+from pyestat._engine.rule import Rule
 
 
 _SUPPORTED_VERSIONS = frozenset({"1"})

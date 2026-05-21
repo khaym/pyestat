@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from pyestat._time import TimePoint, monthly_e_stat, quarterly_e_stat, yearly
+from pyestat._engine.time import TimePoint, monthly_e_stat, quarterly_e_stat, yearly
 
 
 class TestMonthly:

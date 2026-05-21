@@ -14,8 +14,8 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from pyestat._endpoint import StatsDataResponse
-from pyestat._matchers import FingerprintMatcher, Matcher, StatsCodeMatcher
-from pyestat._rule import Rule
+from pyestat._engine.matchers import FingerprintMatcher, Matcher, StatsCodeMatcher
+from pyestat._engine.rule import Rule
 from pyestat.errors import AmbiguousRuleError
 
 

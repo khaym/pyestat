@@ -11,8 +11,8 @@ from collections.abc import Sequence
 from typing import Any, Literal
 
 from pyestat._endpoint import ClassObj
-from pyestat._rule import Rule
-from pyestat._transformers import TimeNormalizer, TransformContext, ValueCaster
+from pyestat._engine.rule import Rule
+from pyestat._engine.transformers import TimeNormalizer, TransformContext, ValueCaster
 
 
 def apply_rule(
