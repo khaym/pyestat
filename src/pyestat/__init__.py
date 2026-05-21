@@ -1,8 +1,15 @@
 """Python client for the e-Stat API.
 
-Public surface: HTTP client (Layer 1) + endpoint client (Layer 2).
-Rule-engine symbols (Layer 3) will be added once that layer lands.
+Public surface spans all four layers:
+
+* Layer 1 — :class:`EstatHttpClient`, :class:`ProgressEvent`.
+* Layer 2 — :class:`EstatClient`, :class:`StatsDataResponse`,
+  :class:`MetaInfoResponse`, :class:`StatsListResponse`,
+  :class:`Page`, :class:`ClassObj`.
+* Layer 3 — :class:`Rule`, :func:`load_builtin_rules`.
+* Errors — :class:`EstatError` and its leaves.
 """
+from pyestat._builtin_rules import load_builtin_rules
 from pyestat._endpoint import (
     ClassObj,
     EstatClient,
@@ -12,7 +19,9 @@ from pyestat._endpoint import (
     StatsListResponse,
 )
 from pyestat._http import EstatHttpClient, ProgressEvent
+from pyestat._rule import Rule
 from pyestat.errors import (
+    AmbiguousRuleError,
     EstatApiError,
     EstatError,
     HttpRetryExhaustedError,
@@ -21,6 +30,7 @@ from pyestat.errors import (
 
 
 __all__ = [
+    "AmbiguousRuleError",
     "ClassObj",
     "EstatApiError",
     "EstatClient",
@@ -30,7 +40,9 @@ __all__ = [
     "MetaInfoResponse",
     "Page",
     "ProgressEvent",
+    "Rule",
     "StatsDataResponse",
     "StatsListResponse",
     "TooManyRowsError",
+    "load_builtin_rules",
 ]

@@ -1,0 +1,34 @@
+"""Library-bundled rule loader.
+
+Reads every ``*.yaml`` under :mod:`pyestat.rules.builtin` into
+:class:`Rule` instances. Uses ``importlib.resources`` so the loader
+works when pyestat is installed from a wheel (where the YAML files
+sit inside ``site-packages``) as well as from a working tree.
+"""
+from __future__ import annotations
+
+from importlib import resources
+from pathlib import Path
+
+from pyestat._rule import Rule
+from pyestat._rule_loader import YamlRuleLoader
+
+
+def load_builtin_rules() -> list[Rule]:
+    """Return every rule shipped under ``pyestat/rules/builtin/``.
+
+    Order is by filename so a future ``AmbiguousRuleError`` would list
+    candidate rules in a stable, diff-friendly order.
+    """
+    loader = YamlRuleLoader()
+    root = resources.files("pyestat.rules.builtin")
+    rules: list[Rule] = []
+    for entry in sorted(root.iterdir(), key=lambda p: p.name):
+        if entry.name.endswith(".yaml"):
+            # importlib.resources files have a ``read_text`` API but
+            # YamlRuleLoader expects a path. ``as_file`` gives us a
+            # concrete path even when the package is shipped from a
+            # zip-style wheel.
+            with resources.as_file(entry) as path:
+                rules.append(loader.load(Path(path)))
+    return rules

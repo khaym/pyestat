@@ -19,24 +19,29 @@ def apply_rule(
     values: tuple[dict[str, Any], ...],
     class_objs: Sequence[ClassObj],
     stats_data_id: str,
-    rule: "Rule | Literal['auto'] | None",
+    rule: "Rule | Literal['heuristic'] | None",
 ) -> tuple[dict[str, Any], ...]:
     """Run the requested transformation mode over ``values``.
 
-    Returns ``values`` verbatim for raw mode; routes through the
-    Transformer pipeline for an explicit Rule; otherwise applies the
-    heuristic label substitution.
+    ``rule`` here is already-resolved: the ``"auto"`` fallback that
+    callers may pass to :meth:`EstatClient.get_stats_data` is collapsed
+    into either a concrete :class:`Rule` (when a built-in / project rule
+    matched) or ``"heuristic"`` (when nothing matched) before reaching
+    this function. Keeping ``apply_rule`` agnostic of that fallback
+    means a future direct caller cannot get the resolution chain wrong.
     """
     if rule is None:
         return values
-    if rule == "auto":
-        return _apply_auto(values, class_objs)
+    if rule == "heuristic":
+        return _apply_heuristic(values, class_objs)
     if isinstance(rule, Rule):
         return _apply_full(values, class_objs, stats_data_id, rule)
-    raise TypeError(f"rule must be Rule, 'auto', or None; got {type(rule).__name__}")
+    raise TypeError(
+        f"rule must be Rule, 'heuristic', or None; got {type(rule).__name__}"
+    )
 
 
-def _apply_auto(
+def _apply_heuristic(
     values: tuple[dict[str, Any], ...],
     class_objs: Sequence[ClassObj],
 ) -> tuple[dict[str, Any], ...]:

@@ -11,8 +11,8 @@ normalization — those are Layer 3.
 from __future__ import annotations
 
 import math
-from collections.abc import Callable, Iterator, Mapping
-from dataclasses import dataclass, replace
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any, Literal
 
 from pyestat._http import EstatHttpClient, ProgressEvent
@@ -160,12 +160,21 @@ class EstatClient:
         *,
         app_id: str | None = None,
         http: EstatHttpClient | None = None,
+        builtin_rules: "Sequence[Any] | None" = None,
     ) -> None:
         if http is None:
             if app_id is None:
                 raise ValueError("Either app_id or http is required")
             http = EstatHttpClient(app_id=app_id)
         self._http = http
+        # Imported lazily to keep the import graph one-way: the rule
+        # subsystem may depend on the endpoint module, but not the
+        # other way around at module-import time.
+        from pyestat._builtin_rules import load_builtin_rules
+        from pyestat._rule_manager import RuleManager
+
+        resolved_builtins = list(builtin_rules) if builtin_rules is not None else load_builtin_rules()
+        self._rule_manager = RuleManager(builtin=resolved_builtins)
 
     # ----- getStatsData -----
 
@@ -173,21 +182,25 @@ class EstatClient:
         self,
         stats_data_id: str,
         *,
-        rule: "Rule | Literal['auto'] | None" = "auto",
+        rule: "Rule | Literal['auto', 'heuristic'] | None" = "auto",
         max_rows: int | None = None,
         progress: Callable[[ProgressEvent], None] | None = None,
     ) -> StatsDataResponse:
         """Fetch one table, walking ``NEXT_KEY`` until all rows are pulled.
 
-        ``rule`` selects the transformation mode (Decision B):
+        ``rule`` selects the transformation mode (Decision B / E):
 
-        * ``"auto"`` (default) — heuristic label substitution; rows get
-          a ``{axis_id}_label`` field for every axis with a CLASS lookup.
-          No standard-code mapping and no value typing.
+        * ``"auto"`` (default) — try the rule resolution chain
+          (user > project > builtin); if any layer matches, apply
+          that rule; otherwise fall back to ``"heuristic"``.
+        * ``"heuristic"`` — label substitution only (each axis gets a
+          ``{axis_id}_label`` field); no standard-code mapping and no
+          value typing. Useful when you want predictable output
+          regardless of which built-in rules ship with the library.
         * ``None`` — raw mode. Returns Layer 2's untransformed flattened
           rows verbatim.
-        * :class:`Rule` — full declared transformation via the Layer 3
-          Transformer pipeline.
+        * :class:`Rule` — apply this rule directly, bypassing the
+          resolution chain.
 
         When ``max_rows`` is set, a cheap ``cntGetFlg=Y`` probe runs first
         and the call raises :class:`TooManyRowsError` before any data page
@@ -209,11 +222,19 @@ class EstatClient:
         pages = list(self.iter_stats_data_pages(stats_data_id, progress=progress))
         first = pages[0]
         values = tuple(v for p in pages for v in p.values)
+        raw = StatsDataResponse(
+            stats_data_id=stats_data_id,
+            total_number=first.total_number,
+            table_inf=first.table_inf,
+            class_objs=first.class_objs,
+            values=values,
+        )
         # Imported lazily so the (L3 → L2) dependency direction stays
         # one-way: ``_apply.py`` consumes ``ClassObj`` from this module.
         from pyestat._apply import apply_rule
 
-        transformed = apply_rule(values, first.class_objs, stats_data_id, rule)
+        resolved = self._resolve_rule(raw, rule)
+        transformed = apply_rule(values, first.class_objs, stats_data_id, resolved)
         return StatsDataResponse(
             stats_data_id=stats_data_id,
             total_number=first.total_number,
@@ -221,6 +242,22 @@ class EstatClient:
             class_objs=first.class_objs,
             values=transformed,
         )
+
+    def _resolve_rule(
+        self,
+        raw: "StatsDataResponse",
+        rule: "Rule | Literal['auto', 'heuristic'] | None",
+    ) -> "Rule | Literal['heuristic'] | None":
+        """Collapse the ``"auto"`` fallback into a concrete decision.
+
+        ``"auto"`` consults the rule manager first and falls back to
+        ``"heuristic"`` when nothing matched; everything else passes
+        through untouched.
+        """
+        if rule == "auto":
+            match = self._rule_manager.select(raw)
+            return match if match is not None else "heuristic"
+        return rule  # type: ignore[return-value]
 
     def iter_stats_data_pages(
         self,
