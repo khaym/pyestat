@@ -153,6 +153,12 @@ class EstatClient:
     raw config so tests can supply a mock transport without monkey-
     patching, and so future async / cached variants can swap the
     transport without touching this surface.
+
+    ``user_rules`` injects caller-defined :class:`Rule` objects into the
+    top precedence layer of the resolution chain
+    (``user > project > builtin``, Decision E). A user rule that matches
+    the same table as a builtin shadows that builtin; an unrelated user
+    rule does not block bundled rules from firing on other tables.
     """
 
     def __init__(
@@ -161,6 +167,7 @@ class EstatClient:
         app_id: str | None = None,
         http: EstatHttpClient | None = None,
         builtin_rules: "Sequence[Any] | None" = None,
+        user_rules: "Sequence[Any] | None" = None,
     ) -> None:
         if http is None:
             if app_id is None:
@@ -174,7 +181,8 @@ class EstatClient:
         from pyestat._engine.manager import RuleManager
 
         resolved_builtins = list(builtin_rules) if builtin_rules is not None else load_builtin_rules()
-        self._rule_manager = RuleManager(builtin=resolved_builtins)
+        resolved_user = list(user_rules) if user_rules is not None else []
+        self._rule_manager = RuleManager(user=resolved_user, builtin=resolved_builtins)
 
     # ----- getStatsData -----
 

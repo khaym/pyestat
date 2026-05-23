@@ -31,11 +31,13 @@ from pyestat._engine.rule import Rule
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
 
 
-def _make_client(payload: dict[str, Any], *, builtin_rules=None) -> EstatClient:
+def _make_client(
+    payload: dict[str, Any], *, builtin_rules=None, user_rules=None
+) -> EstatClient:
     queue: Iterator[dict[str, Any]] = iter([payload])
     transport = httpx.MockTransport(lambda _r: httpx.Response(200, json=next(queue)))
     http = EstatHttpClient(app_id="x", transport=transport, sleep=lambda _s: None)
-    return EstatClient(http=http, builtin_rules=builtin_rules)
+    return EstatClient(http=http, builtin_rules=builtin_rules, user_rules=user_rules)
 
 
 def _population_payload() -> dict[str, Any]:
@@ -159,3 +161,86 @@ class TestExplicitRule:
         assert row["time_granularity"] == "yearly"
         assert row["value"] == 126146
         assert isinstance(row["value"], int)
+
+
+class TestUserRules:
+    """``user_rules=`` is the ergonomic on-ramp for caller-defined rules.
+
+    Decision E pins the chain user > project > builtin, but only the
+    builtin layer is wired up automatically. ``user_rules`` lets callers
+    inject Python ``Rule`` objects without touching the rule manager
+    directly. The behaviors pinned here:
+
+    * a user rule shadows a builtin that would otherwise match;
+    * a non-matching user rule still lets the builtin chain fire;
+    * the kwarg is optional and defaults to "no user rules".
+
+    User and builtin rules are constructed identically apart from the
+    fields under test; ``value.type`` (``"string"`` vs ``"number"``) is
+    used as the observable signal of which layer won.
+    """
+
+    def _string_typed(self) -> Rule:
+        return Rule.model_validate(
+            {
+                "schema_version": "1",
+                "match": {"statsCode": "00200524"},
+                "axes": {"time": {"id": "time", "format": "yearly"}},
+                "value": {"type": "string"},
+            }
+        )
+
+    def _number_typed(self) -> Rule:
+        return Rule.model_validate(
+            {
+                "schema_version": "1",
+                "match": {"statsCode": "00200524"},
+                "axes": {"time": {"id": "time", "format": "yearly"}},
+                "value": {"type": "number"},
+            }
+        )
+
+    def test_user_rule_shadows_matching_builtin(self) -> None:
+        # Both layers match the same table; the only observable
+        # difference is value.type. If the user layer wins, the value
+        # is cast to int; otherwise it stays as the e-Stat string.
+        client = _make_client(
+            _population_payload(),
+            builtin_rules=[self._string_typed()],
+            user_rules=[self._number_typed()],
+        )
+        resp = client.get_stats_data("0003448237")
+        assert resp.values[0]["value"] == 126146
+        assert isinstance(resp.values[0]["value"], int)
+
+    def test_user_rule_does_not_block_unrelated_builtin(self) -> None:
+        # A user rule scoped to a different statsCode must not prevent
+        # the builtin chain from firing on the table at hand; otherwise
+        # one user rule would disable every bundled rule.
+        unrelated = Rule.model_validate(
+            {
+                "schema_version": "1",
+                "match": {"statsCode": "99999999"},
+                "axes": {"time": {"id": "time", "format": "yearly"}},
+                "value": {"type": "number"},
+            }
+        )
+        client = _make_client(
+            _population_payload(),
+            builtin_rules=[self._string_typed()],
+            user_rules=[unrelated],
+        )
+        resp = client.get_stats_data("0003448237")
+        # Builtin (value.type=string) wins because the user rule's
+        # statsCode does not match.
+        assert resp.values[0]["value"] == "126146"
+
+    def test_omitted_user_rules_preserves_default_behavior(self) -> None:
+        # Smoke test: not passing user_rules must behave identically to
+        # the pre-existing client construction (builtin-only chain).
+        client = _make_client(
+            _population_payload(),
+            builtin_rules=[self._number_typed()],
+        )
+        resp = client.get_stats_data("0003448237")
+        assert resp.values[0]["value"] == 126146

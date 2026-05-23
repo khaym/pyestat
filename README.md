@@ -50,6 +50,29 @@ else:
         #     "unit": "千人", "value": "126146"}
 ```
 
+## Supplying your own rules
+
+`pyestat` ships built-in transformation rules for a small set of
+tables; pass `user_rules=` to override them or add coverage for a
+table that has none. A user rule that matches the same `statsCode` as
+a builtin shadows that builtin for the call:
+
+```python
+from pyestat import EstatClient, Rule
+
+custom = Rule.model_validate({
+    "schema_version": "1",
+    "match":  {"statsCode": "00200524"},
+    "axes":   {"time": {"id": "time", "format": "yearly"}},
+    "value":  {"type": "number"},
+})
+
+client = EstatClient(user_rules=[custom])
+```
+
+Loading rules from `./rules/*.yaml` is on the roadmap; for now the
+`Rule` object is constructed directly in Python.
+
 ## Configuring the appId
 
 `pyestat` only reads `ESTAT_APP_ID` from `os.environ`. How that variable
