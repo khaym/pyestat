@@ -233,7 +233,7 @@ Three storage layers (Decision E), resolved at rule-load time:
 
 ```mermaid
 graph TD
-    U["User-specified rule<br/>(passed to client)"]
+    U["User-specified rules<br/>(EstatClient(user_rules=[...]))"]
     P["Project-local<br/>./rules/*.yaml"]
     B["Library-bundled<br/>pyestat/rules/builtin/*.yaml"]
 
@@ -242,7 +242,10 @@ graph TD
 ```
 
 The Matcher Pipeline runs against the merged candidate set; ties at
-the same precedence level raise `AmbiguousRuleError`.
+the same precedence level raise `AmbiguousRuleError`. Note that
+`get_stats_data(rule=Rule(...))` is a *per-call override*, not a
+layer of this chain — it skips the Matcher Pipeline entirely (see
+Cross-Layer Sequences below).
 
 ## Layer 4: Use Case Layer (Future)
 
@@ -290,9 +293,15 @@ sequenceDiagram
         H-->>E: page
     end
 
-    E->>RM: select_rule(response, user_rule)
-    Note over RM: Matcher Pipeline<br/>StatsCode → Fingerprint
-    RM-->>E: Rule | None
+    alt rule is "auto"
+        E->>RM: select_rule(response)
+        Note over RM: Matcher Pipeline<br/>StatsCode → Fingerprint
+        RM-->>E: Rule | None (falls back to "heuristic")
+    else rule is an explicit Rule instance
+        Note over E: Skip RuleManager;<br/>use the supplied Rule as-is<br/>(caller owns applicability — DESIGN.md B)
+    else rule is "heuristic" or None
+        Note over E: Skip RuleManager;<br/>route mode straight to apply
+    end
     E->>TP: apply(rows, rule)
     Note over TP: Transformer Pipeline<br/>TimeNormalizer → ValueCaster → ...
     TP-->>E: normalized rows
@@ -300,6 +309,10 @@ sequenceDiagram
 ```
 
 ### Rule selection detail
+
+Engaged only when `rule="auto"`. Explicit `Rule` instances bypass
+the Matcher Pipeline entirely (DESIGN.md B); the caller is
+responsible for the rule's applicability to the response.
 
 ```mermaid
 sequenceDiagram
