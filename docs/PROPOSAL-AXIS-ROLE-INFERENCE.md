@@ -131,18 +131,66 @@ Resolution order: **C > B > A > D**.
 The classifier observes a table's metadata and assigns each axis a
 role from the controlled vocabulary below.
 
-**Role vocabulary (initial):**
+**Role vocabulary (resolved, see Open question 2).** The vocabulary
+operates at *two levels* that the initial flat list conflated. An
+**axis role** answers "what is this whole axis?" — exactly one per
+axis, and what the classifier assigns. A **code/value attribute**
+answers "what is this individual code or cell?" — detected per code,
+orthogonal to the axis role, because such facts are held differently in
+the wire format and so need different detection (see below).
+
+*Axis roles* (classifier assigns one per axis):
 
 | Role | Meaning | Example |
 |---|---|---|
 | `time` | Time axis (any granularity) | `time` axis with `2022000101` codes |
 | `area` | Geographic / regional axis | `area` axis with JIS codes |
-| `value` | Primary observation value | numeric column extracted as the record's value |
-| `unit` | Unit-of-measure tag | `単位` value within trade's `cat02` |
+| `value` | Primary observation value | the cell (`$`) extracted as the record's value |
 | `category` | Classification / dimension axis | wage age bracket, household goods type |
-| `meta-axis` | Pivot meta-axis (one logical record split across N rows) | `cat02` in trade (数量 / 金額 / 単位) |
-| `aggregate` | Aggregate-vs-detail flag | rows with `_total` / parent codes |
+| `meta-axis` | Pivot meta-axis (one logical record split across N rows) | `tab` (表章項目) when n>1; `cat02` in trade |
 | `unknown` | Classifier could not decide | triggers Layer D fallback |
+
+*Code/value attributes* (detected per code; not axis roles):
+
+| Attribute | Meaning | Where it lives in the wire format | Output role |
+|---|---|---|---|
+| `unit` | Unit-of-measure of a value | an attribute of a value-type entry (CPI/wage/GDP `tab` carries `@unit`), **or** a meta-axis row whose cell is a unit string (trade `単位` → `ＮＯ`) | *projection* — surfaces as an output column at conversion time |
+| `aggregate` | Total/parent vs leaf detail | a code's position in the `level` / `parentCode` hierarchy, sometimes needing a name heuristic (`全国` / `総合` / `合計`) | *selection* — a per-row flag used to filter, not a column |
+
+**Responsibility split (so demoting `unit` / `aggregate` does not break
+pivot).** The classifier judges *structure* — is an axis a `meta-axis`
+(does it split one record across rows)? — not unit semantics. That
+structural label is what triggers pivot. The conversion definition
+(rule) then supplies the *semantics* — which meta-axis value maps to
+which named, typed output column. The `unit` attribute is consumed
+downstream (authoring-time schema suggestion in Skill #8; routing
+unit-valued meta rows to string columns in a Layer A generic pivot);
+`aggregate` is consumed as a row filter. If the classifier cannot place
+a `meta-axis` with confidence, the table degrades to Layer D (raw rows
+preserved) rather than mis-pivoting. Dependency is one-way: classifier
+→ conversion definition.
+
+The flow below traces the trade table through that split — the
+classifier decides *whether* to pivot (structure), the rule decides
+*how* (semantics), and the two code attributes feed in where they are
+used:
+
+```mermaid
+flowchart TD
+    raw["Wire rows — one logical record split across N rows<br/>cat02=単位 → $ = ＮＯ<br/>cat02=数量 → $ = 12345<br/>cat02=金額 → $ = 98765"]
+    raw --> clf["Axis classifier · heuristic · runtime<br/>judges STRUCTURE<br/>time / area / value / category / meta-axis (+ confidence)"]
+    clf --> gate{"meta-axis placed<br/>with confidence?"}
+    gate -- "no" --> layerD["Layer D · raw rows preserved<br/>no pivot — data not lost"]
+    gate -- "yes" --> rule["Conversion definition (rule) · authoring-time<br/>supplies SEMANTICS<br/>単位→unit · 数量→quantity · 金額→amount_jpy"]
+    rule --> pivot["Pivot engine<br/>group by non-meta axes → one row per group"]
+    pivot --> out["Structured output<br/>{ cat01, area, time, quantity, amount_jpy, unit }"]
+    unitAttr["unit · code attribute · projection"] -.->|"routes its value into a column"| rule
+    aggAttr["aggregate · code attribute · selection"] -.->|"filters total vs detail rows"| pivot
+```
+
+The exact output shape (`unit` column naming, how `aggregate` is
+carried) is deferred to the conversion-definition format and #10
+(pivot); this question fixes only the vocabulary level.
 
 **Inputs the classifier may consider:**
 
@@ -152,7 +200,18 @@ role from the controlled vocabulary below.
 - `TABLE_INF.TITLE_SPEC` prefix
 - sibling axes' roles for disambiguation (optional second pass)
 
-Implementation strategy is an open question — see below.
+**Implementation strategy (resolved, see Open question 1):** the
+classifier is **deterministic heuristic at request time** — no LLM call
+on the data path. Most roles fall out of e-Stat conventions and CLASS
+code shape (`time` / `area` from conventional `axis_id` + date/JIS code
+sets; `aggregate` from `parentCode` / `level`; `value` from cell type;
+`category` by elimination). The hard role is `meta-axis`, where axis
+values carry domain meaning (`数量` / `金額` / `単位`); low classifier
+confidence there routes to Layer D rather than to a runtime model. LLM
+assistance is confined to authoring time (Skill #8), where it proposes
+an output schema a human reviews and saves as a durable Layer B / C
+rule — so an ambiguous table is resolved once, not re-inferred on every
+call.
 
 ### Output-schema-first rule format
 
@@ -280,15 +339,32 @@ Open question — see below.
 
 Each closes independently; none block stating the proposal.
 
-1. **Axis classifier implementation strategy**: heuristic rules
-   (deterministic, predictable, requires careful crafting per role) /
-   LLM (flexible; costs, latency, deterministic only with caching) /
-   hybrid (heuristic baseline with LLM for ambiguous cases). Affects
-   testability, runtime cost, and deployment shape.
-2. **Role vocabulary completeness**: the eight-role list above is
-   seeded from CATALOG.md. May need additions (e.g. `quality-flag` for
-   provisional / final markers observed in some tables) or splits
-   (e.g. separating `time-instant` from `time-period`).
+1. **Axis classifier implementation strategy** — *Resolved
+   (2026-05-31)*: **deterministic heuristic at request time; LLM only at
+   authoring time (Skill #8).** The data path stays LLM-free, so role
+   inference is deterministic and unit-testable, the library carries no
+   API-key/network dependency, and ambiguity is resolved once into a
+   durable rule rather than re-paid per call. Axes the heuristic cannot
+   place with confidence route to Layer D (raw rows preserved), not to a
+   runtime model. Rejected: runtime hybrid (per-call LLM cost, latency,
+   non-determinism, and result not persisted — duplicates the Skill #8
+   rule-minting path). This constrains Open question 4 (Skill #8 UX):
+   the LLM assist lives at authoring time, not request time.
+2. **Role vocabulary completeness** — *Resolved (2026-05-31)*: the
+   initial eight-role flat list **conflated two levels**. Re-leveled to
+   six **axis roles** (`time`, `area`, `value`, `category`,
+   `meta-axis`, `unknown`) plus two **code/value attributes** (`unit`,
+   `aggregate`) that are detected per code, not assigned per axis — the
+   2026-05 survey shows unit and aggregate are held differently in the
+   wire format (unit as a value-type attribute or meta-axis row;
+   aggregate as `level`/`parentCode` hierarchy) and so need different
+   detection from axis roles. Speculative additions rejected:
+   `quality-flag` (provisional/final) and a `time-instant` /
+   `time-period` split have **zero instances** in the six surveyed
+   statsCodes; growth is observation-driven, with `unknown` → Layer D
+   absorbing the unforeseen until a concrete table demands a new role.
+   See the re-leveled Role vocabulary section above for the
+   responsibility split that keeps pivot detection intact.
 3. **Migration path for existing axis-id rules**: ship a v1 adapter
    that compiles old rules to v2 form at load time? Rewrite bundled v1
    rules in v2 form before this proposal lands? Define a v1 grace
