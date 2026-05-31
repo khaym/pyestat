@@ -1,43 +1,38 @@
 # pyestat Use Cases
 
-Captured: 2026-05-20. Documents the user-facing scenarios pyestat is
-built to serve, so feature scoping can be measured against actual
-needs rather than abstract API completeness.
+Last revised: 2026-05-31. For evaluators deciding whether pyestat fits
+their workflow, and for maintainers scoping features against real
+demand. Documents the user-facing scenarios pyestat is built to serve,
+so feature scoping can be measured against actual needs rather than
+abstract API completeness.
 
-## Primary (Originating)
+## Apex
 
-**Personal financial scenario modeling and asset management
-simulation.**
+pyestat lets LLMs and analysts fetch any e-Stat table as structured data
+— without learning the catalog, the wire format, or e-Stat's
+table-by-table quirks.
 
-Concrete examples:
+## Primary use cases
 
-- *Inflation risk planning*: Pull 20–30 years of CPI history to feed
-  long-run expense projections.
-- *Wage trends*: Pull wage structure data by age bracket to inform
-  income forecasting.
-- *Household consumption*: Use the household consumption survey to
-  estimate the cost of maintaining a given standard of living over
-  decades.
+The same barrier — going from "I want data X" to "I have the right table
+parsed into a usable shape" — blocks several scenarios. pyestat treats
+all of them as primary:
 
-This is the originating motivation. The barrier today is not a lack
-of e-Stat data — it's that going from "I want to model inflation" to
-"I have the right table parsed into a usable shape" requires deep
-knowledge of e-Stat's catalog and wire format.
-
-## Adjacent (Plausible Extension)
-
-The same barrier blocks neighboring use cases:
-
+- **LLM agents** (cross-cuts the domains below): Natural-language query
+  → table discovery → structured data fetch → grounded answer. pyestat
+  is the "structured fetch" layer the agent calls, regardless of the
+  end domain.
 - **Finance & investment**: Macro indicators (GDP, trade balance,
   population) as scenario inputs.
-- **Real estate**: Population projections, housing starts, official
-  land prices, broken down by region.
+- **Real estate**: Population projections, housing starts, official land
+  prices, broken down by region.
 - **Research & journalism**: Building a time series for one theme by
   stitching across multiple tables.
-- **LLM agents**: Natural-language query → table discovery →
-  structured data fetch → grounded answer.
+- **Personal financial scenario modeling**: Long-run CPI / wage /
+  household-consumption series for inflation, income, and lifestyle-cost
+  modeling. (Originating use case — see [Originating context](#originating-context).)
 
-## Shared Barriers and pyestat's Approach
+## Shared barriers and pyestat's approach
 
 | Barrier | Approach (cross-reference) |
 |---|---|
@@ -48,9 +43,23 @@ The same barrier blocks neighboring use cases:
 | 100k-row pagination per response | Auto-fetch-all with `max_rows` warning (Decision I) |
 | `time` representation varies by table | Built-in time parsers + granularity metadata (Decision D) |
 | `value` type varies within one response | `value.type: conditional` (planned rule extension, Decision D) |
+| Table is not yet covered by a rule | Heuristic fallback: parse axes best-effort and return raw values; rules can be added later via Skill (#8) and project-local YAML (#15) |
+
+## Originating context
+
+pyestat began as a personal-finance modeling tool. The original use case
+— long-run CPI / wage / household-consumption series for inflation,
+income, and lifestyle-cost modeling — surfaced the structural problem
+that turned out to apply far more broadly: e-Stat's value is real, but
+the path from "I want data X" to "I have it in a usable shape" is steep.
+The other primary use cases above share this barrier.
 
 ## Out of Scope (For Now)
 
+- **Complete structuring of every e-Stat table.** Uncatalogued tables
+  fall back to heuristic mode, which preserves data but may not
+  normalize axes. Aim for catalog coverage of high-traffic tables and
+  rely on Skill / project rules for the long tail.
 - **Cross-granularity aggregation** (e.g. monthly → yearly).
   Delegated to the caller's analysis layer (pandas, polars, etc.).
   pyestat ships enough metadata (`time_granularity`) for the caller
