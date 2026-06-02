@@ -7,6 +7,7 @@ Submodules form a small DAG:
 * :mod:`pyestat._engine.rule` — Rule pydantic schema.
 * :mod:`pyestat._engine.loader` — YAML loader for the schema.
 * :mod:`pyestat._engine.fingerprint` — structural fingerprint of a response.
+* :mod:`pyestat._engine.classifier` — axis classifier (role + confidence; Layer A).
 * :mod:`pyestat._engine.matchers` — Matcher pipeline (statsCode + fingerprint).
 * :mod:`pyestat._engine.transformers` — Transformer pipeline (time / value).
 * :mod:`pyestat._engine.manager` — RuleManager (resolution chain).

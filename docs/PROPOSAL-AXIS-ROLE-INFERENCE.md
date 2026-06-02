@@ -5,8 +5,11 @@ inferring each axis's role from table metadata, so the library scales
 to the long tail of e-Stat tables — not just the high-traffic ones we
 wrote rules for.**
 
-- **Status**: Accepted (2026-06-02) — all six open questions closed;
-  impact reflected into tasks #4 / #8 / #10 / #13 / #15
+- **Status**: Accepted (2026-06-02) — original six open questions closed;
+  impact reflected into tasks #4 / #8 / #10 / #13 / #15. Amended 2026-06-02
+  with Open question 7: the classifier may read fetched data rows (its
+  signature gains an optional `rows` input), which retires the
+  measure-spread lexicon as the load-bearing meta-axis signal.
 - **Last revised**: 2026-06-02
 - **Reader**: pyestat maintainers and future contributors who need to
   understand the proposed pivot away from per-table rules, or who hold
@@ -200,16 +203,21 @@ carried) is deferred to the conversion-definition format and #10
 - `CLASS` vocabulary on the axis (does it look like an ISO 8601 date set? a JIS region set?)
 - `TABLE_INF.TITLE_SPEC` prefix
 - sibling axes' roles for disambiguation (optional second pass)
+- the **fetched data rows** — per axis member, are the cells numeric or a
+  unit string? This is the signal that places the non-`tab` `meta-axis`
+  (see Open question 7); it is metadata-absent and request-time only,
+  still deterministic.
 
 **Implementation strategy (resolved, see Open question 1):** the
 classifier is **deterministic heuristic at request time** — no LLM call
 on the data path. Most roles fall out of e-Stat conventions and CLASS
 code shape (`time` / `area` from conventional `axis_id` + date/JIS code
 sets; `aggregate` from `parentCode` / `level`; `value` from cell type;
-`category` by elimination). The hard role is `meta-axis`, where axis
-values carry domain meaning (`数量` / `金額` / `単位`); low classifier
-confidence there routes to Layer D rather than to a runtime model. LLM
-assistance is confined to authoring time (Skill #8), where it proposes
+`category` by elimination). The hard role is `meta-axis`; two structural
+signals place it without a keyword list — the `tab` convention and a
+data-row unit-string signal (see Open question 7) — and an axis neither
+can place keeps low confidence and routes to Layer D rather than to a
+runtime model. LLM assistance is confined to authoring time (Skill #8), where it proposes
 an output schema a human reviews and saves as a durable Layer B / C
 rule — so an ambiguous table is resolved once, not re-inferred on every
 call.
@@ -521,6 +529,52 @@ Each closes independently; none block stating the proposal.
    accuracy unmeasurable, and high-cardinality fetch is expensive — see
    CATALOG incidentals); unsupervised self-consistency metrics (blind to
    systematic mis-classification).
+7. **Classifier input scope — metadata only, or metadata + data?** —
+   *Resolved (2026-06-02, post-acceptance amendment)*: **the classifier
+   may read the fetched data rows, not just metadata.** The data path
+   stays deterministic — no LLM (Open question 1 is unchanged); reading
+   cell values is not inference.
+
+   The decisive evidence is a field PoC over the six surveyed statsCodes
+   (`work/research/poc_meta_score.py`). It tested whether the non-`tab`
+   `meta-axis` — trade's `cat02` = 数量 / 金額 / 単位, the case the
+   measure-spread lexicon was carrying — can be placed *without* a keyword
+   list (the measure-spread lexicon being the 数量 / 金額 / 単位 / 価額
+   keyword set):
+   - **The reliable signature is in the data, not the metadata**: a member
+     whose cells are a genuine *unit string* (trade 単位 → `ＮＯ`) coexisting
+     with numeric members. e-Stat leaves `@unit` unset on trade's 数量 /
+     単位 members, so metadata alone cannot see this.
+   - **Metadata `@unit` heterogeneity is not a usable trigger**: population's
+     男女別 axis carries heterogeneous `@unit` (千人 / 女＝１００) yet is a
+     category — keying on it mis-pivots (the mis-pivot guard, Q6).
+   - **Suppression markers are the confounder**: e-Stat's "-" / "***" cells
+     are non-numeric but carry no unit meaning, so they must be excluded
+     before the string-vs-number test (household samples are ~90 % "-",
+     which faked heterogeneity on `time` until markers were dropped).
+
+   On the six statsCodes the data signal flagged trade's `cat02` and **zero**
+   false positives — age, 男女別, area, time, and every dimension stayed
+   non-meta.
+
+   Consequences:
+   - The **measure-spread lexicon (数量 / 金額 / 単位 / 価額) is retired as the
+     load-bearing meta signal.** Non-`tab` meta detection rests on two
+     structural signals, neither using a keyword list: the `tab` convention
+     for all-numeric value-type metas, and the data unit-string signal for
+     unit-row metas. The lexicon may survive only as a weak metadata-only
+     fallback (capped at `medium`) on a data-absent path.
+   - The classifier signature gains an **optional `rows` input**. With rows,
+     it runs the unit-string signal; without (e.g. a `getMetaInfo`-only
+     rule-validation path), it degrades to the metadata-only heuristics.
+   - **Rejected**: a runtime LLM over the data (Open question 1 already
+     rejected this — the signal is a deterministic type check, not
+     inference); metadata `@unit` as the meta trigger (population
+     false-positive above).
+
+   Relationship to Q6: the coverage harness now measures this data signal's
+   reach and its zero-false-meta bar; a recurring D-fall that the signal
+   *could* have placed is a promotion candidate.
 
 ## Out of scope
 
