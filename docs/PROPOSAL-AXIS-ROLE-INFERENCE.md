@@ -5,8 +5,9 @@ inferring each axis's role from table metadata, so the library scales
 to the long tail of e-Stat tables — not just the high-traffic ones we
 wrote rules for.**
 
-- **Status**: Proposed
-- **Last revised**: 2026-05-31
+- **Status**: Accepted (2026-06-02) — all six open questions closed;
+  impact reflected into tasks #4 / #8 / #10 / #13 / #15
+- **Last revised**: 2026-06-02
 - **Reader**: pyestat maintainers and future contributors who need to
   understand the proposed pivot away from per-table rules, or who hold
   a task this proposal touches (#4, #8, #10, #13, #15).
@@ -282,8 +283,8 @@ section. MVP does not include it.
 2. Layer 2 (Endpoint) fetches the table and metadata.
 3. Axis classifier runs on the metadata. Each axis gets a role and a
    confidence score.
-4. If any required axis is `unknown` or confidence below threshold →
-   Layer D fallback path.
+4. If any required axis is `unknown` or its confidence tier is below
+   threshold (see Open question 5) → Layer D fallback path.
 5. Otherwise, the role pattern is computed.
 6. Rule resolution walks C → B → A:
    - C / B: find a rule whose `match.role_pattern` matches.
@@ -323,7 +324,14 @@ section. MVP does not include it.
 
 ### Migration path
 
-Open question — see below.
+**Hard cutover, no compatibility layer** (resolved — see Open question
+3). v1 was never published, so there is no installed base to stay
+compatible with: the three built-in rules are rewritten to v2 in the
+same change-set that introduces v2 and flips the loader's
+`_SUPPORTED_VERSIONS` to `{"2"}`. v2 is the first publicly released rule
+schema — an ordering dependency on #5 (OSS publish). The loader's
+version-gating seam is retained but dormant until the first post-release
+migration.
 
 ## Impact on existing tasks
 
@@ -365,20 +373,154 @@ Each closes independently; none block stating the proposal.
    absorbing the unforeseen until a concrete table demands a new role.
    See the re-leveled Role vocabulary section above for the
    responsibility split that keeps pivot detection intact.
-3. **Migration path for existing axis-id rules**: ship a v1 adapter
-   that compiles old rules to v2 form at load time? Rewrite bundled v1
-   rules in v2 form before this proposal lands? Define a v1 grace
-   period?
-4. **Skill #8 UX in detail**: what does the "initial-schema-proposal"
-   flow look like? Static template + LLM completion vs interactive
-   review of classifier output. Architecture-neutral but blocks #8
-   task design.
-5. **Confidence threshold for Layer A → Layer D transition**: per-axis
-   thresholds, table-level aggregate confidence, or rule-author
-   override (`require_confidence: high` per rule).
-6. **Layer A coverage measurement**: how do we know Layer A is "good
-   enough" before promoting it? Empirical evaluation against the
-   surveyed statsCodes is a natural starting point.
+3. **Migration path for existing axis-id rules** — *Resolved
+   (2026-06-02)*: **hard cutover, no compatibility layer.** The decisive
+   fact is that v1 was **never published** — no git tag, `version =
+   "0.1.0"`, and OSS release is still pending (#5). The three options in
+   the original question all presuppose an installed base that does not
+   exist:
+   - *v1→v2 load-time adapter* — **rejected**: a compatibility layer
+     (two parsers, a migration table, tests for both, ongoing drift)
+     serving a population of zero. Premature.
+   - *v1 grace period* — **rejected**: a grace period means something
+     only if v1 shipped and callers depend on it; neither holds.
+   - *Rewrite bundled v1 rules in v2* — **adopted**, with one sequencing
+     correction: the three built-in rules (`gdp_advance`,
+     `population_estimates`, `foreign_trade`) cannot be rewritten into v2
+     *before any implementation*, because v2's short form expands against
+     Layer A's role-default registry. They are rewritten **in the same
+     change-set that introduces v2 and flips `_SUPPORTED_VERSIONS` from
+     `{"1"}` to `{"2"}`** in the loader. The loader's existing
+     `schema_version` gate is the single cutover point: a stray v1 file
+     then fails fast with the error it already raises for unknown
+     versions.
+
+   Consequences:
+   - **No v1 reaches a public release; v2 is the first published rule
+     schema.** This imposes an ordering dependency on #5 (OSS publish):
+     publish after v2 lands, or never tag v1. (The internal transition
+     may briefly accept `{"1", "2"}` so the test suite migrates
+     incrementally, but the shipped artifact supports only v2.)
+   - **#15** (project-local rule discovery) loads **v2 only** from day
+     one — it never needs a v1 code path.
+   - The loader's migration seam (documented as letting "a future
+     migration step sit between the raw mapping and the validator") is
+     **kept but stays dormant**: its first real use is the post-1.0
+     v2→v3 migration, when a published installed base finally makes an
+     adapter / grace period earn its keep. The chosen strategy is
+     therefore not "migrations are unnecessary" but "the first migration
+     that needs compatibility machinery is the first one *after* release,
+     not this one."
+4. **Skill #8 UX in detail** — *Resolved (2026-06-02)*: close the
+   *direction*, defer the *detail*. The two sub-options are not equal —
+   the rest of this proposal already decides between them. *Static
+   template + LLM completion* is the "describe the table structure / fill
+   in the YAML template" workflow this proposal explicitly supersedes
+   (see Summary and the #8 impact row); reintroducing it would undo the
+   pivot. **Adopted direction: interactive review of classifier output**
+   — the Skill runs the Axis classifier, presents the inferred role
+   pattern and a proposed v2 output schema, and the human edits column
+   names / label maps and saves a durable Layer B / C rule. This is the
+   skeleton Open question 1 already forces (LLM assist at authoring time,
+   classifier-proposed, human-reviewed, persisted once).
+
+   **The detailed UX is deliberately deferred to #8 implementation,
+   after the classifier exists.** The concrete flow — how the role
+   pattern is surfaced, how edits and label-map elicitation are captured,
+   what preview / confirmation looks like — is *data-dependent*: it can
+   be designed well only against the classifier's real output shape and
+   with the v2 loader as the save target. Specifying it now would be
+   speculative. So #8's detailed design is **blocked-by the Axis
+   classifier and v2 rule-loader implementation tasks** (created at
+   acceptance). Q4 closes by fixing the skeleton, the direction, and that
+   dependency — not by inventing UX in a vacuum. This resolves the
+   "architecture-neutral but blocks #8 task design" tension explicitly:
+   the architecture-neutral part (direction) is decided here; the
+   #8-blocking part (detail) is sequenced after implementation.
+5. **Confidence threshold for Layer A → Layer D transition** —
+   *Resolved (2026-06-02)*: confidence is a **discrete tier (`high` /
+   `medium` / `low`)**, not a calibrated probability — Open question 1
+   made the classifier a deterministic heuristic, which has no softmax
+   to read a 0–1 score from. A tier records **how many independent
+   signals agreed** on an axis's role:
+   - `high` — the role's defining signals concur (e.g. `time`:
+     conventional `axis_id` *and* CLASS codes parse as e-Stat date
+     codes).
+   - `medium` — one strong signal, the rest silent or neutral
+     (conventional `axis_id` but codes don't cleanly parse, or vice
+     versa); `category`-by-elimination tops out here.
+   - `low` — signals conflict, or only the weakest evidence is present;
+     the typical `meta-axis` miss lands here.
+
+   The gate is **per-axis tier, aggregated weakest-link to a
+   table-level decision**: every axis the matched role pattern
+   *requires* must clear the threshold, else the whole table falls to
+   Layer D (this is Resolution flow step 4). **Default threshold =
+   `medium`** (only `low` routes to D); its concrete calibration is
+   Open question 6's job — Q6 is the loop that may move this dial, Q5
+   fixes only the mechanism. Consistency check: at `medium`,
+   `category`-by-elimination passes (it is a legitimate Layer A
+   dimension role, not a fallback), while an unreadable `meta-axis`
+   (`low`) correctly drops to D rather than mis-pivoting. **Rejected for
+   MVP**: per-axis independently-tunable thresholds (no evidence any
+   axis needs a different bar yet — premature). **Reserved, not MVP**: a
+   per-rule `require_confidence:` override on Layer B / C rules (a rule
+   author demanding `high` before their rule fires); the MVP default is
+   the single global table-level gate.
+6. **Layer A coverage measurement** — *Resolved (2026-06-02)*: a
+   **checked-in evaluation harness** (extending
+   `work/research/analyze.py`) scored against a **hand-labelled gold
+   set** — the role of every axis in a *representative sample per
+   structural group* across the six surveyed statsCodes (sample, not
+   census: the catalog already flags wage-structure's 30 groups and
+   GDP's 16k tables as too large to enumerate). Two metrics, reported as
+   a pair because either alone is gameable:
+   - **Reach** — axis-signatures Layer A classifies (does not route to
+     D) ÷ total. A *coverage* statistic, reported but **not gated** (an
+     overconfident classifier maximises reach by mislabelling).
+   - **Role accuracy** — axes whose inferred role equals the gold role ÷
+     axes over the reached set. This is the *gate*.
+   - **Mis-pivot guard** — `meta-axis` false positives tracked
+     separately and weighted hardest: pivoting a table that shouldn't be
+     pivoted corrupts data silently, so the bar is **zero false
+     meta-axis on the gold set** — better to drop to D than mis-pivot
+     (mirrors the Responsibility-split section).
+
+   **"Good enough" bar**: role accuracy on the reached set ≥ a target
+   (start strict, tune with observation) **and** zero mis-pivot, with
+   reach reported alongside. **Relationship to Q5**: the harness sweeps
+   Q5's threshold over {`low`, `medium`, `high`}, traces the
+   reach-vs-accuracy curve, and picks the lowest threshold that still
+   clears the correctness bar — so Q6 *calibrates* the knob Q5
+   *defines*.
+
+   **Coverage as a living loop** (not a one-shot gate): every **Layer D
+   fall** and every **Skill #8 authoring event** records the table's
+   structural fingerprint plus which axis was `unknown` / low-confidence.
+   That log is the growth engine the static survey lacks — it (a) feeds
+   new entries into the gold set from real field encounters, so the
+   measurement set widens with usage instead of staying frozen at six
+   statsCodes; (b) makes Open question 2's deferred "a concrete table
+   demands a new role" trigger observable in practice rather than in
+   principle (Layer D otherwise silently absorbs the very signal that
+   Layer A needs to grow); and (c) supplies CATALOG.md's "not yet
+   classified" section. **A recurring fingerprint in the D-sink is the
+   promotion signal**: a structural pattern that repeatedly falls to D —
+   or is repeatedly hand-resolved the same way in Skill #8 — is the
+   evidence to widen *built-in* coverage, either by adding a Layer B rule
+   or by extending the classifier's signals / Layer A role-default
+   registry. So testing across many tables does not merely measure
+   Layer A — it grows it. The instrumentation point coincides with
+   Skill #8 (Open question 4), where a human already resolves a D-fall
+   into a durable rule.
+
+   **Honest scope**: passing on six statsCodes is a
+   **regression floor, not proof of generalization**; the long tail is
+   caught by Layer D + Skill #8, not by perfecting Layer A. **Rejected**:
+   large automated surveys over thousands of tables (no gold labels →
+   accuracy unmeasurable, and high-cardinality fetch is expensive — see
+   CATALOG incidentals); unsupervised self-consistency metrics (blind to
+   systematic mis-classification).
 
 ## Out of scope
 
@@ -394,5 +536,12 @@ Each closes independently; none block stating the proposal.
 
 ## Next steps
 
-1. Accept this proposal, or revise it.
-2. Close open questions iteratively across sessions.
+Accepted 2026-06-02. Remaining work, tracked separately in task-tracker:
+
+1. Decompose implementation tasks: Axis classifier, role-default
+   registry (#4), output-schema-first v2 rule loader, Layer D heuristic
+   mode, Skill #8 refactor (#8), D-sink instrumentation (Q6).
+2. Promote accepted parts into ARCHITECTURE.md and DESIGN.md (separate
+   task; the as-built MVP docs stand until then).
+3. Honour the ordering dependency recorded on #5: v2 is the first
+   published rule schema — do not tag / publish v1.
