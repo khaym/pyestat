@@ -5,8 +5,11 @@ The transformation pipeline (Layer 3) plugs into the endpoint client
 
 * ``rule=None`` — raw mode (axis_id-keyed dicts, no transformation).
 * ``rule="auto"`` (default) — try the user > project > builtin
-  resolution chain; fall back to ``"heuristic"`` if nothing matched.
-* ``rule="heuristic"`` — label substitution only, bypassing builtins.
+  resolution chain; fall back to Layer D (``"heuristic"``) if nothing
+  matched.
+* ``rule="heuristic"`` — Layer D fallback (#23): best-effort ``time``
+  normalization plus additive labels, preserving raw data; bypasses
+  builtins.
 * ``rule=Rule(...)`` — full declared transformation, bypassing the
   resolution chain.
 
@@ -98,8 +101,8 @@ class TestRawMode:
 class TestAutoMode:
     """``rule="auto"`` walks the resolution chain (user > project > builtin)
     and applies a matching rule; only when nothing matched does it
-    fall back to heuristic label substitution. This is the contract
-    DESIGN.md Decision B / ARCHITECTURE.md Rule Resolution Order pin."""
+    fall back to Layer D (#23). This is the contract DESIGN.md Decision B
+    / ARCHITECTURE.md Rule Resolution Order pin."""
 
     def test_auto_applies_builtin_when_one_matches(self) -> None:
         # The bundled population rule expects axes.area; with the area
@@ -115,24 +118,28 @@ class TestAutoMode:
         assert row["value"] == 126146
         assert isinstance(row["value"], int)
 
-    def test_auto_falls_back_to_heuristic_when_no_builtin_matches(self) -> None:
+    def test_auto_falls_back_to_layer_d_when_no_builtin_matches(self) -> None:
         # The fixture's axes (no area) do not satisfy the bundled
-        # population rule's FingerprintMatcher; ``"auto"`` then has to
-        # fall back to heuristic label substitution.
+        # population rule's FingerprintMatcher; ``"auto"`` then falls back
+        # to Layer D.
         client = _make_client(_population_payload())
         resp = client.get_stats_data("0003448237")
         row = resp.values[0]
-        # heuristic adds *_label fields but does not normalize time
-        # or cast value.
+        # Layer D adds *_label fields AND normalizes the classifier-detected
+        # time axis best-effort (the fixture's 2020000000 is yearly), but
+        # never coerces the cell value (data preserved).
         assert row["tab_label"] == "総人口"
         assert row["cat01_label"] == "男女計"
-        assert "time_granularity" not in row
-        assert row["value"] == "126146"  # still string
+        assert row["time"] == "2020"
+        assert row["time_granularity"] == "yearly"
+        assert row["time_code"] == "2020000000"
+        assert row["value"] == "126146"  # still string — not cast
 
 
 class TestHeuristicMode:
-    """``rule="heuristic"`` bypasses the resolution chain so the output
-    is predictable regardless of which builtins ship."""
+    """``rule="heuristic"`` invokes Layer D directly, bypassing the
+    resolution chain so the output is predictable regardless of which
+    builtins ship."""
 
     def test_heuristic_does_not_consult_builtin_rules(self) -> None:
         # Even on a payload the bundled rule would match, ``"heuristic"``
@@ -142,7 +149,10 @@ class TestHeuristicMode:
         resp = client.get_stats_data("0003448237", rule="heuristic")
         row = resp.values[0]
         assert row["tab_label"] == "総人口"
-        assert "time_granularity" not in row
+        # Layer D still normalizes the time axis best-effort (the patched
+        # fixture uses a monthly code) but does not cast the value.
+        assert row["time"] == "2022-01"
+        assert row["time_granularity"] == "monthly"
         assert row["value"] == "126146"
 
 

@@ -11,7 +11,9 @@ from collections.abc import Sequence
 from typing import Any, Literal
 
 from pyestat._endpoint import ClassObj
+from pyestat._engine.classifier import AxisRole, classify
 from pyestat._engine.rule import Rule
+from pyestat._engine.time import TimePoint, monthly_e_stat, quarterly_e_stat, yearly
 from pyestat._engine.transformers import TimeNormalizer, TransformContext, ValueCaster
 
 
@@ -27,13 +29,15 @@ def apply_rule(
     callers may pass to :meth:`EstatClient.get_stats_data` is collapsed
     into either a concrete :class:`Rule` (when a built-in / project rule
     matched) or ``"heuristic"`` (when nothing matched) before reaching
-    this function. Keeping ``apply_rule`` agnostic of that fallback
-    means a future direct caller cannot get the resolution chain wrong.
+    this function. ``"heuristic"`` runs **Layer D** (#23): best-effort
+    ``time`` normalization plus additive labels, preserving raw data.
+    Keeping ``apply_rule`` agnostic of that fallback means a future
+    direct caller cannot get the resolution chain wrong.
     """
     if rule is None:
         return values
     if rule == "heuristic":
-        return _apply_heuristic(values, class_objs)
+        return _apply_layer_d(values, class_objs)
     if isinstance(rule, Rule):
         return _apply_full(values, class_objs, stats_data_id, rule)
     raise TypeError(
@@ -41,21 +45,64 @@ def apply_rule(
     )
 
 
-def _apply_heuristic(
+def _apply_layer_d(
     values: tuple[dict[str, Any], ...],
     class_objs: Sequence[ClassObj],
 ) -> tuple[dict[str, Any], ...]:
-    """Heuristic mode: add ``{axis_id}_label`` for each axis with a CLASS table.
+    """Layer D — the no-rule fallback (#23): preserve data, normalize nothing
+    structural.
 
-    Codes stay where they were so any downstream code/filter logic
-    continues to work; the label is purely additive (Decision B's
-    "safe defaults").
+    The axis classifier (not a hand-written rule) decides which axis is
+    ``time``; that axis gets a best-effort normalization. Every axis with a
+    CLASS table gains an additive ``{axis_id}_label``. Raw codes stay in
+    place, the cell value is never coerced, and a code no parser recognises
+    is left untouched — Layer D never raises and never drops a row. ``area``
+    is passed through; standard-code mapping is task #4's job.
     """
+    classification = classify(class_objs)
+    time_axes = tuple(
+        a.axis_id for a in classification.axes if a.role == AxisRole.TIME
+    )
     lookup: dict[str, dict[str, str]] = {
         obj.id: {c["code"]: c.get("name", c["code"]) for c in obj.classes if "code" in c}
         for obj in class_objs
     }
-    return tuple(_label_row(row, lookup) for row in values)
+    return tuple(_layer_d_row(row, time_axes, lookup) for row in values)
+
+
+def _layer_d_row(
+    row: dict[str, Any],
+    time_axes: Sequence[str],
+    lookup: dict[str, dict[str, str]],
+) -> dict[str, Any]:
+    out = _label_row(row, lookup)
+    for axis_id in time_axes:
+        code = out.get(axis_id)
+        if not isinstance(code, str):
+            continue
+        point = _best_effort_time(code)
+        if point is None:
+            continue
+        out[axis_id] = point.normalized
+        out[f"{axis_id}_code"] = code
+        out["time_granularity"] = point.granularity
+    return out
+
+
+def _best_effort_time(code: str) -> TimePoint | None:
+    """Try the built-in time parsers in turn; return the first match or None.
+
+    Layer D has no rule naming the format, so it probes monthly → quarterly
+    → yearly (specific to general). Each raises ``ValueError`` on a shape it
+    does not own, so a code none of them recognise yields ``None`` and is
+    left raw.
+    """
+    for parser in (monthly_e_stat, quarterly_e_stat, yearly):
+        try:
+            return parser(code)
+        except ValueError:
+            continue
+    return None
 
 
 def _label_row(row: dict[str, Any], lookup: dict[str, dict[str, str]]) -> dict[str, Any]:

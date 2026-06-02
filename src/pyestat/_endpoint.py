@@ -200,11 +200,14 @@ class EstatClient:
 
         * ``"auto"`` (default) — try the rule resolution chain
           (user > project > builtin); if any layer matches, apply
-          that rule; otherwise fall back to ``"heuristic"``.
-        * ``"heuristic"`` — label substitution only (each axis gets a
-          ``{axis_id}_label`` field); no standard-code mapping and no
-          value typing. Useful when you want predictable output
-          regardless of which built-in rules ship with the library.
+          that rule; otherwise fall back to Layer D (``"heuristic"``).
+        * ``"heuristic"`` — Layer D fallback. The axis classifier detects
+          the ``time`` axis and normalizes it best-effort; every axis gets
+          a ``{axis_id}_label`` field. Raw codes are preserved, the cell
+          value is never coerced, and an unrecognized code is left as-is —
+          data is preserved, axes are not normalized (standard-code
+          mapping is out of scope here). Useful when you want predictable,
+          lossless output regardless of which built-in rules ship.
         * ``None`` — raw mode. Returns Layer 2's untransformed flattened
           rows verbatim.
         * :class:`Rule` — apply this rule directly, bypassing the
