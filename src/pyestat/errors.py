@@ -76,6 +76,39 @@ class AmbiguousRuleError(EstatError):
         self.matched_rules = matched_rules
 
 
+class RuleExpansionError(EstatError):
+    """A v2 short-form rule column could not be expanded to long form.
+
+    Raised at rule-load / expansion time — an *authoring* error (the
+    column omits its source yet its name is not a role to infer one
+    from). It is a typed :class:`EstatError` so the auto-path wiring
+    (#28) can tell it apart from a genuine I/O failure; in practice the
+    auto path never surfaces it to a caller, because built-in rules are
+    validated in CI and explicitly-passed rules are the caller's own.
+    """
+
+    def __init__(self, *, column: str, reason: str) -> None:
+        super().__init__(f"cannot expand output column {column!r}: {reason}")
+        self.column = column
+        self.reason = reason
+
+
+class RoleResolutionError(EstatError):
+    """A v2 rule references a role the classification cannot pin to one axis.
+
+    Either no axis carries the role (e.g. an ``area`` column on an
+    area-less table) or several do (the pivot case, #10, which needs a
+    ``where`` predicate this MVP does not have). Typed so the auto-path
+    wiring (#28) catches it and falls back to Layer D — preserving the
+    caller's data — rather than letting it surface.
+    """
+
+    def __init__(self, *, role: object, reason: str) -> None:
+        super().__init__(f"cannot resolve role {role!r}: {reason}")
+        self.role = role
+        self.reason = reason
+
+
 class TooManyRowsError(EstatError):
     """The requested table exceeds the caller-supplied ``max_rows`` cap.
 

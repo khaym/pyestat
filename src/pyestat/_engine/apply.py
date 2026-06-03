@@ -7,14 +7,17 @@ here without needing this module to know its result type).
 """
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections import defaultdict
+from collections.abc import Callable, Sequence
 from typing import Any, Literal
 
 from pyestat._endpoint import ClassObj
-from pyestat._engine.classifier import AxisRole, classify
-from pyestat._engine.rule import Rule
-from pyestat._engine.time import TimePoint, monthly_e_stat, quarterly_e_stat, yearly
+from pyestat._engine.classifier import AxisRole, TableClassification, classify
+from pyestat._engine.role_defaults import TRANSFORMS, expand_short_form
+from pyestat._engine.rule import OutputColumn, Rule, RuleV2
+from pyestat._engine.time import best_effort
 from pyestat._engine.transformers import TimeNormalizer, TransformContext, ValueCaster
+from pyestat.errors import RoleResolutionError
 
 
 def apply_rule(
@@ -80,29 +83,13 @@ def _layer_d_row(
         code = out.get(axis_id)
         if not isinstance(code, str):
             continue
-        point = _best_effort_time(code)
+        point = best_effort(code)
         if point is None:
             continue
         out[axis_id] = point.normalized
         out[f"{axis_id}_code"] = code
         out["time_granularity"] = point.granularity
     return out
-
-
-def _best_effort_time(code: str) -> TimePoint | None:
-    """Try the built-in time parsers in turn; return the first match or None.
-
-    Layer D has no rule naming the format, so it probes monthly → quarterly
-    → yearly (specific to general). Each raises ``ValueError`` on a shape it
-    does not own, so a code none of them recognise yields ``None`` and is
-    left raw.
-    """
-    for parser in (monthly_e_stat, quarterly_e_stat, yearly):
-        try:
-            return parser(code)
-        except ValueError:
-            continue
-    return None
 
 
 def _label_row(row: dict[str, Any], lookup: dict[str, dict[str, str]]) -> dict[str, Any]:
@@ -130,3 +117,72 @@ def _apply_full(
     rows = TimeNormalizer().transform(rows, rule, ctx)
     rows = ValueCaster().transform(rows, rule, ctx)
     return tuple(rows)
+
+
+# --- v2 application (output-schema-first, #22) ------------------------------
+#
+# The v2 counterpart of ``_apply_full``. It needs the *classification* (which
+# axis plays which role) to resolve each column's ``source.role`` to an axis;
+# the request-path wiring that runs the classifier and feeds it here is #28,
+# so this function takes the classification as an argument and stays testable
+# in isolation. ``where``-predicate pivot (a role spanning several axes) is
+# #10; until then a referenced role must resolve to exactly one axis.
+
+
+def apply_v2_rule(
+    values: tuple[dict[str, Any], ...],
+    classification: TableClassification,
+    rule: RuleV2,
+) -> tuple[dict[str, Any], ...]:
+    """Apply a v2 rule's output-column declarations to ``values``.
+
+    Expands the rule defensively first, so a short-form rule (e.g. a
+    Layer A rule #28 builds in memory) applies without a separate load
+    step. Raises :class:`RoleResolutionError` — a typed, catchable error
+    — when a column's role is absent or ambiguous, so the auto path can
+    fall back to Layer D rather than surface the failure.
+    """
+    rule = expand_short_form(rule)
+    role_to_axes: dict[AxisRole, list[str]] = defaultdict(list)
+    for axis in classification.axes:
+        role_to_axes[axis.role].append(axis.axis_id)
+    plan = [(col.column, _resolve_source(col, role_to_axes)) for col in rule.output]
+    return tuple({column: read(row) for column, read in plan} for row in values)
+
+
+def _resolve_source(
+    col: OutputColumn, role_to_axes: dict[AxisRole, list[str]]
+) -> Callable[[dict[str, Any]], Any]:
+    """Bind one output column to a per-row reader, resolved once per call.
+
+    The VALUE role is special: its value is the observation cell
+    (``value``), not an axis code — the classifier assigns VALUE to the
+    single-member ``tab`` axis, but the number lives under ``value`` in
+    Layer 2's flattened row.
+    """
+    role = col.source.role
+    transform = TRANSFORMS.resolve(col.transform)
+    if role == AxisRole.VALUE:
+        key = "value"
+    else:
+        axes = role_to_axes.get(role, [])
+        if not axes:
+            raise RoleResolutionError(
+                role=role.value,
+                reason=f"no axis is classified as {role.value} in this table",
+            )
+        if len(axes) > 1:
+            raise RoleResolutionError(
+                role=role.value,
+                reason=(
+                    f"multiple axes are classified as {role.value} ({axes}); "
+                    "disambiguating needs a where-predicate pivot (#10)"
+                ),
+            )
+        key = axes[0]
+
+    def read(row: dict[str, Any]) -> Any:
+        raw = row.get(key)
+        return transform(raw) if raw is not None else raw
+
+    return read

@@ -12,10 +12,13 @@ from typing import Any
 
 import yaml
 
-from pyestat._engine.rule import Rule
+from pyestat._engine.role_defaults import expand_short_form
+from pyestat._engine.rule import Rule, RuleV2
 
 
-_SUPPORTED_VERSIONS = frozenset({"1"})
+# v1 and v2 coexist during the transition; #29 flips this to {"2"} once the
+# built-in rules are rewritten and the v1 path is retired.
+_SUPPORTED_VERSIONS = frozenset({"1", "2"})
 
 
 class YamlRuleLoader:
@@ -25,7 +28,7 @@ class YamlRuleLoader:
     may carry migration tables, plugin registries, etc.
     """
 
-    def load(self, path: Path) -> Rule:
+    def load(self, path: Path) -> Rule | RuleV2:
         with path.open(encoding="utf-8") as f:
             data: Any = yaml.safe_load(f)
         if not isinstance(data, dict):
@@ -38,9 +41,13 @@ class YamlRuleLoader:
                 f"unsupported schema_version {version!r} in {path} "
                 f"(known: {sorted(_SUPPORTED_VERSIONS)})"
             )
+        if version == "2":
+            # Expand short form here so every caller downstream sees long
+            # form (Done: "expanded at load time").
+            return expand_short_form(RuleV2.model_validate(data))
         return Rule.model_validate(data)
 
-    def load_dir(self, path: Path) -> list[Rule]:
+    def load_dir(self, path: Path) -> list[Rule | RuleV2]:
         """Load every ``*.yaml`` file in ``path`` in sorted order.
 
         Returns an empty list when the directory is absent — that is

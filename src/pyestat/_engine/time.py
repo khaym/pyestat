@@ -100,6 +100,23 @@ def yearly(code: str) -> TimePoint:
     raise ValueError(f"not a yearly time code: {code!r}")
 
 
+def best_effort(code: str) -> TimePoint | None:
+    """Probe the built-in parsers specific→general; first match or ``None``.
+
+    A *total* function: it never raises. Each parser rejects shapes it
+    does not own with ``ValueError``, so a code none recognise yields
+    ``None`` and the caller keeps the raw value. Shared by Layer D's
+    no-rule fallback (#23) and Layer A's ``time`` role-default (#22) so
+    both agree on what counts as a recognisable time code.
+    """
+    for parser in (monthly_e_stat, quarterly_e_stat, yearly):
+        try:
+            return parser(code)
+        except ValueError:
+            continue
+    return None
+
+
 TimeParser = Callable[[str], TimePoint]
 
 # Pre-populated registry of built-in time parsers. Custom parsers can

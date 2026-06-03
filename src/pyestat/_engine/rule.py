@@ -17,7 +17,9 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
+
+from pyestat._engine.classifier import AxisRole
 
 
 class _Strict(BaseModel):
@@ -83,3 +85,78 @@ class Rule(_Strict):
     match: MatchRule
     axes: AxesRule
     value: ValueRule
+
+
+# --- v2: output-schema-first rules (PROPOSAL-AXIS-ROLE-INFERENCE, #22) ------
+#
+# v2 inverts v1: instead of describing the input axes, a rule declares the
+# *output columns* the caller receives. Each column draws on an axis *role*
+# (what the classifier inferred), not an axis id, so one rule covers every
+# table sharing a role pattern. Short-form columns omit ``source`` /
+# ``transform`` and are filled at load time from the role-default registry
+# (see ``role_defaults.py``); the models below accept both forms, and
+# expansion — not the schema — is what guarantees long form downstream.
+
+
+class RoleSource(_Strict):
+    """Where a v2 output column draws its value from: an axis *role*.
+
+    ``role`` reuses the classifier's :class:`AxisRole` vocabulary so a
+    rule and the classifier speak the same language. The ``where``
+    predicate that turns a multi-axis role into a pivot is deferred to
+    #10; until then a referenced role must resolve to exactly one axis.
+    """
+
+    role: AxisRole
+
+
+class OutputColumn(_Strict):
+    """One declared output column.
+
+    Long form sets all three fields. Short form gives only ``column``
+    (its name doubling as the role) or ``column`` + ``source`` (letting
+    the transform default); the omitted fields are ``None`` until
+    expansion fills them.
+    """
+
+    column: str
+    source: RoleSource | None = None
+    transform: str | None = None
+
+
+class MatchV2(_Strict):
+    """v2 narrowing predicate: the ordered role pattern a table must show.
+
+    The matcher (#28) compares this against the classifier's
+    ``role_pattern``; axis ids never appear, which is what collapses the
+    rule count from O(tables) to O(role patterns).
+    """
+
+    role_pattern: list[AxisRole]
+
+
+class RuleV2(_Strict):
+    """An output-schema-first rule (``schema_version: "2"``).
+
+    Accepts both long and short forms; :func:`role_defaults.expand_short_form`
+    normalizes a loaded rule to long form. The loader gates the version.
+    """
+
+    schema_version: Literal["2"]
+    match: MatchV2
+    output: list[OutputColumn]
+
+    @model_validator(mode="after")
+    def _reject_duplicate_columns(self) -> "RuleV2":
+        """Output column names must be unique.
+
+        Application builds each row as a dict keyed by ``column``; a
+        repeated name would silently keep only the last writer and drop
+        the earlier column's data. Caught here so the collision fails loud
+        at load time rather than corrupting rows at request time.
+        """
+        seen: set[str] = set()
+        dupes = {c.column for c in self.output if c.column in seen or seen.add(c.column)}
+        if dupes:
+            raise ValueError(f"duplicate output column name(s): {sorted(dupes)}")
+        return self
