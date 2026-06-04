@@ -26,9 +26,9 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from pyestat._engine.classifier import AxisRole
+from pyestat._engine.classifier import AxisRole, TableClassification
 from pyestat._engine.registry import Registry
-from pyestat._engine.rule import OutputColumn, RoleSource, RuleV2
+from pyestat._engine.rule import MatchV2, OutputColumn, RoleSource, RuleV2
 from pyestat._engine.time import best_effort, monthly_e_stat, quarterly_e_stat, yearly
 from pyestat.errors import RuleExpansionError
 
@@ -142,3 +142,43 @@ def expand_short_form(rule: RuleV2) -> RuleV2:
     return rule.model_copy(
         update={"output": [_expand_column(col) for col in rule.output]}
     )
+
+
+def build_generic_rule(classification: TableClassification) -> RuleV2 | None:
+    """Build a Layer A generic rule from a classification, or ``None`` when
+    the table cannot be structured generically and must route to Layer D.
+
+    Returns ``None`` when any axis is a ``meta-axis`` (folding it into one
+    record needs the #10 pivot) or ``unknown`` (the classifier's
+    route-to-Layer-D sentinel), or when a role repeats across axes
+    (disambiguating which column reads which axis needs #10's ``where``
+    predicate). Otherwise emits one long-form column per axis: the ``value``
+    role reads the observation cell, every other role reads its own axis,
+    and each inherits its role-default transform. Because every default is
+    a total transform (see module docstring), the resulting rule cannot
+    raise at apply time — the Layer A guarantee.
+    """
+    axes = classification.axes
+    if not axes:
+        return None
+    roles = [axis.role for axis in axes]
+    if any(role in (AxisRole.META_AXIS, AxisRole.UNKNOWN) for role in roles):
+        return None
+    if len(set(roles)) != len(roles):
+        return None
+    names = ["value" if axis.role == AxisRole.VALUE else axis.axis_id for axis in axes]
+    if len(set(names)) != len(names):
+        # A non-value axis whose id collides with the value column's name
+        # (e.g. an axis literally id'd "value"). Decline rather than let
+        # RuleV2's duplicate-column validator raise on the auto path, which
+        # would break the "auto never raises" guarantee.
+        return None
+    output = [
+        OutputColumn(
+            column=name,
+            source=RoleSource(role=axis.role),
+            transform=default_transform(axis.role),
+        )
+        for name, axis in zip(names, axes)
+    ]
+    return RuleV2(schema_version="2", match=MatchV2(role_pattern=roles), output=output)

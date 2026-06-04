@@ -17,52 +17,89 @@ from pyestat._engine.role_defaults import TRANSFORMS, expand_short_form
 from pyestat._engine.rule import OutputColumn, Rule, RuleV2
 from pyestat._engine.time import best_effort
 from pyestat._engine.transformers import TimeNormalizer, TransformContext, ValueCaster
-from pyestat.errors import RoleResolutionError
+from pyestat.errors import RoleResolutionError, RuleExpansionError
 
 
 def apply_rule(
     values: tuple[dict[str, Any], ...],
     class_objs: Sequence[ClassObj],
     stats_data_id: str,
-    rule: "Rule | Literal['heuristic'] | None",
+    rule: "Rule | RuleV2 | Literal['heuristic'] | None",
+    classification: TableClassification | None = None,
 ) -> tuple[dict[str, Any], ...]:
     """Run the requested transformation mode over ``values``.
 
-    ``rule`` here is already-resolved: the ``"auto"`` fallback that
-    callers may pass to :meth:`EstatClient.get_stats_data` is collapsed
-    into either a concrete :class:`Rule` (when a built-in / project rule
-    matched) or ``"heuristic"`` (when nothing matched) before reaching
-    this function. ``"heuristic"`` runs **Layer D** (#23): best-effort
-    ``time`` normalization plus additive labels, preserving raw data.
-    Keeping ``apply_rule`` agnostic of that fallback means a future
-    direct caller cannot get the resolution chain wrong.
+    ``rule`` is already-resolved (the ``"auto"`` chain is collapsed by the
+    caller — see :func:`apply_auto`):
+
+    * ``None`` — raw mode; the flattened Layer 2 rows pass through.
+    * ``"heuristic"`` — **Layer D** (#23): best-effort ``time``
+      normalization plus additive labels, preserving raw data.
+    * :class:`RuleV2` — a v2 output-schema rule applied against the
+      ``classification`` (which axis plays which role).
+    * :class:`Rule` — a v1 rule applied through the legacy transformer
+      pipeline (the explicit escape hatch, removed with v1 in #30).
+
+    ``classification`` is the request-path classification (#28); the
+    Layer D and v2 modes need it. When a standalone caller omits it, it is
+    computed from the rows here so those modes stay self-contained.
     """
     if rule is None:
         return values
-    if rule == "heuristic":
-        return _apply_layer_d(values, class_objs)
     if isinstance(rule, Rule):
         return _apply_full(values, class_objs, stats_data_id, rule)
+    if classification is None:
+        classification = classify(class_objs, rows=values)
+    if rule == "heuristic":
+        return _apply_layer_d(values, class_objs, classification)
+    if isinstance(rule, RuleV2):
+        return apply_v2_rule(values, classification, rule)
     raise TypeError(
-        f"rule must be Rule, 'heuristic', or None; got {type(rule).__name__}"
+        f"rule must be Rule, RuleV2, 'heuristic', or None; got {type(rule).__name__}"
     )
+
+
+def apply_auto(
+    values: tuple[dict[str, Any], ...],
+    class_objs: Sequence[ClassObj],
+    classification: TableClassification,
+    resolved: "RuleV2 | None",
+) -> tuple[dict[str, Any], ...]:
+    """Apply the ``rule="auto"`` decision, demoting v2 resolution failures
+    to Layer D so the auto path never surfaces them.
+
+    ``resolved`` is the resolver's output: a :class:`RuleV2` (Layer C / B /
+    A) or ``None`` (route to Layer D). A resolved rule that cannot bind to
+    this table — :class:`RoleResolutionError` (a role missing or ambiguous)
+    or :class:`RuleExpansionError` (a short-form column that cannot expand)
+    — falls back to Layer D rather than erroring, per the errors module
+    contract. Other exceptions (e.g. a user transform raising) are *not*
+    swallowed: role-defaults are total, so such a failure is a real bug.
+    """
+    if resolved is None:
+        return _apply_layer_d(values, class_objs, classification)
+    try:
+        return apply_v2_rule(values, classification, resolved)
+    except (RoleResolutionError, RuleExpansionError):
+        return _apply_layer_d(values, class_objs, classification)
 
 
 def _apply_layer_d(
     values: tuple[dict[str, Any], ...],
     class_objs: Sequence[ClassObj],
+    classification: TableClassification,
 ) -> tuple[dict[str, Any], ...]:
     """Layer D — the no-rule fallback (#23): preserve data, normalize nothing
     structural.
 
-    The axis classifier (not a hand-written rule) decides which axis is
-    ``time``; that axis gets a best-effort normalization. Every axis with a
-    CLASS table gains an additive ``{axis_id}_label``. Raw codes stay in
-    place, the cell value is never coerced, and a code no parser recognises
-    is left untouched — Layer D never raises and never drops a row. ``area``
-    is passed through; standard-code mapping is task #4's job.
+    The axis ``classification`` (computed once on the request path, #28, not
+    a hand-written rule) decides which axis is ``time``; that axis gets a
+    best-effort normalization. Every axis with a CLASS table gains an
+    additive ``{axis_id}_label``. Raw codes stay in place, the cell value is
+    never coerced, and a code no parser recognises is left untouched —
+    Layer D never raises and never drops a row. ``area`` is passed through;
+    standard-code mapping is task #4's job.
     """
-    classification = classify(class_objs)
     time_axes = tuple(
         a.axis_id for a in classification.axes if a.role == AxisRole.TIME
     )

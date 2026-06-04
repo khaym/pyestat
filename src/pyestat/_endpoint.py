@@ -154,11 +154,14 @@ class EstatClient:
     patching, and so future async / cached variants can swap the
     transport without touching this surface.
 
-    ``user_rules`` injects caller-defined :class:`Rule` objects into the
-    top precedence layer of the resolution chain
-    (``user > project > builtin``, Decision E). A user rule that matches
-    the same table as a builtin shadows that builtin; an unrelated user
-    rule does not block bundled rules from firing on other tables.
+    ``user_rules`` injects caller-defined v2 rules into the top precedence
+    layer of the resolution chain (``user > project > builtin``); the
+    ``"auto"`` path resolves them by role pattern. A user rule matching a
+    table's role pattern shadows a built-in for the same pattern; an
+    unrelated user rule does not block built-ins from firing on other
+    tables. (v1 :class:`Rule` objects are ignored by ``"auto"`` and
+    reachable only via an explicit ``rule=Rule(...)`` call — v1 is removed
+    in #30.)
     """
 
     def __init__(
@@ -178,11 +181,18 @@ class EstatClient:
         # subsystem may depend on the endpoint module, but not the
         # other way around at module-import time.
         from pyestat._engine.builtin import load_builtin_rules
-        from pyestat._engine.manager import RuleManager
+        from pyestat._engine.rule import RuleV2
 
         resolved_builtins = list(builtin_rules) if builtin_rules is not None else load_builtin_rules()
         resolved_user = list(user_rules) if user_rules is not None else []
-        self._rule_manager = RuleManager(user=resolved_user, builtin=resolved_builtins)
+        # The v2 auto path resolves by role pattern, so it considers only v2
+        # rules. Legacy v1 rules (the bundled rules until #29, removed in
+        # #30) are ignored here and reachable only via an explicit
+        # ``rule=Rule(...)`` call. Project-local rules (#15) will populate
+        # the middle layer; until then it is empty.
+        self._user_rules = [r for r in resolved_user if isinstance(r, RuleV2)]
+        self._project_rules: list[RuleV2] = []
+        self._builtin_rules = [r for r in resolved_builtins if isinstance(r, RuleV2)]
 
     # ----- getStatsData -----
 
@@ -190,17 +200,20 @@ class EstatClient:
         self,
         stats_data_id: str,
         *,
-        rule: "Rule | Literal['auto', 'heuristic'] | None" = "auto",
+        rule: "Rule | RuleV2 | Literal['auto', 'heuristic'] | None" = "auto",
         max_rows: int | None = None,
         progress: Callable[[ProgressEvent], None] | None = None,
     ) -> StatsDataResponse:
         """Fetch one table, walking ``NEXT_KEY`` until all rows are pulled.
 
-        ``rule`` selects the transformation mode (Decision B / E):
+        ``rule`` selects the transformation mode:
 
-        * ``"auto"`` (default) — try the rule resolution chain
-          (user > project > builtin); if any layer matches, apply
-          that rule; otherwise fall back to Layer D (``"heuristic"``).
+        * ``"auto"`` (default) — classify the table's axes, then resolve a
+          rule through Layers C > B > A > D: a matching v2 rule
+          (user/project, then built-in), else a generic rule built from the
+          classified roles (Layer A), else the Layer D fallback when the
+          table cannot be structured (a low-confidence axis, or a shape
+          needing a pivot this MVP lacks).
         * ``"heuristic"`` — Layer D fallback. The axis classifier detects
           the ``time`` axis and normalizes it best-effort; every axis gets
           a ``{axis_id}_label`` field. Raw codes are preserved, the cell
@@ -233,19 +246,31 @@ class EstatClient:
         pages = list(self.iter_stats_data_pages(stats_data_id, progress=progress))
         first = pages[0]
         values = tuple(v for p in pages for v in p.values)
-        raw = StatsDataResponse(
-            stats_data_id=stats_data_id,
-            total_number=first.total_number,
-            table_inf=first.table_inf,
-            class_objs=first.class_objs,
-            values=values,
-        )
         # Imported lazily so the (L3 → L2) dependency direction stays
-        # one-way: ``_apply.py`` consumes ``ClassObj`` from this module.
-        from pyestat._engine.apply import apply_rule
+        # one-way: the rule subsystem consumes ``ClassObj`` from this module.
+        from pyestat._engine.apply import apply_auto, apply_rule
 
-        resolved = self._resolve_rule(raw, rule)
-        transformed = apply_rule(values, first.class_objs, stats_data_id, resolved)
+        if rule == "auto":
+            from pyestat._engine.classifier import classify
+            from pyestat._engine.resolver import resolve_v2
+
+            # Classify once, with the fetched rows, so #27's data-driven
+            # meta-axis signal works on the real request path; the result
+            # feeds resolution, v2 application, and the Layer D fallback.
+            classification = classify(first.class_objs, first.table_inf, rows=values)
+            resolved = resolve_v2(
+                classification,
+                user=self._user_rules,
+                project=self._project_rules,
+                builtin=self._builtin_rules,
+                stats_data_id=stats_data_id,
+            )
+            transformed = apply_auto(values, first.class_objs, classification, resolved)
+        else:
+            # raw (``None``) and an explicit v1 ``Rule`` never classify;
+            # ``"heuristic"`` and an explicit ``RuleV2`` classify lazily
+            # inside ``apply_rule``, only when the mode actually needs it.
+            transformed = apply_rule(values, first.class_objs, stats_data_id, rule)
         return StatsDataResponse(
             stats_data_id=stats_data_id,
             total_number=first.total_number,
@@ -253,22 +278,6 @@ class EstatClient:
             class_objs=first.class_objs,
             values=transformed,
         )
-
-    def _resolve_rule(
-        self,
-        raw: "StatsDataResponse",
-        rule: "Rule | Literal['auto', 'heuristic'] | None",
-    ) -> "Rule | Literal['heuristic'] | None":
-        """Collapse the ``"auto"`` fallback into a concrete decision.
-
-        ``"auto"`` consults the rule manager first and falls back to
-        ``"heuristic"`` when nothing matched; everything else passes
-        through untouched.
-        """
-        if rule == "auto":
-            match = self._rule_manager.select(raw)
-            return match if match is not None else "heuristic"
-        return rule  # type: ignore[return-value]
 
     def iter_stats_data_pages(
         self,

@@ -59,6 +59,20 @@ class EstatApiError(EstatError):
         self.message = message
 
 
+def _describe_match(rule: object) -> object:
+    """A short, human label for a conflicting rule — its v1 ``statsCode``
+    or its v2 ``role_pattern``, whichever the rule carries — so the error
+    message reads the same shape across both rule schemas."""
+    match = getattr(rule, "match", None)
+    stats_code = getattr(match, "statsCode", None)
+    if stats_code is not None:
+        return stats_code
+    role_pattern = getattr(match, "role_pattern", None)
+    if role_pattern is not None:
+        return [getattr(role, "value", role) for role in role_pattern]
+    return repr(rule)
+
+
 class AmbiguousRuleError(EstatError):
     """Two rules at the same precedence layer matched the same response.
 
@@ -70,7 +84,7 @@ class AmbiguousRuleError(EstatError):
     def __init__(self, *, stats_data_id: str, matched_rules: list) -> None:
         super().__init__(
             f"Multiple rules matched {stats_data_id}: "
-            f"{[r.match.statsCode for r in matched_rules]}"
+            f"{[_describe_match(r) for r in matched_rules]}"
         )
         self.stats_data_id = stats_data_id
         self.matched_rules = matched_rules

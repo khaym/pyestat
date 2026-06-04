@@ -9,9 +9,16 @@ always has output to return.
 """
 from __future__ import annotations
 
-from pyestat._engine.classifier import AxisRole
+from pyestat._engine.apply import apply_v2_rule
+from pyestat._engine.classifier import (
+    AxisClassification,
+    AxisRole,
+    Confidence,
+    TableClassification,
+)
 from pyestat._engine.role_defaults import (
     TRANSFORMS,
+    build_generic_rule,
     default_transform,
 )
 
@@ -77,3 +84,94 @@ class TestRoleDefaults:
             transform = TRANSFORMS.resolve(default_transform(role))
             for adversarial in ("???garbage???", 2020, None, 3.14):
                 transform(adversarial)  # must not raise
+
+
+def _axis(axis_id: str, role: AxisRole) -> AxisClassification:
+    return AxisClassification(axis_id, role, Confidence.HIGH, ("test",))
+
+
+class TestBuildGenericRule:
+    """``build_generic_rule`` turns a classification into a Layer A rule, or
+    declines (``None``) when the table cannot be structured generically and
+    must route to Layer D.
+
+    Business rule: Layer A only handles tables where every axis carries a
+    distinct, directly-addressable role. A meta-axis (needs the #10 pivot),
+    an ``unknown`` axis (the classifier's route-to-D sentinel), or a role
+    that repeats across axes (disambiguating needs #10's where-predicate)
+    each make the table ineligible, so it rides Layer D instead.
+    """
+
+    def test_clean_single_axis_table_yields_one_column_per_axis(self) -> None:
+        clf = TableClassification((
+            _axis("time", AxisRole.TIME),
+            _axis("area", AxisRole.AREA),
+            _axis("tab", AxisRole.VALUE),
+        ))
+        rule = build_generic_rule(clf)
+        assert rule is not None
+        assert rule.schema_version == "2"
+        assert list(rule.match.role_pattern) == [
+            AxisRole.TIME, AxisRole.AREA, AxisRole.VALUE,
+        ]
+        # One column per axis: the value role becomes the "value" column and
+        # the rest read their axis, each with its role-default transform.
+        cols = {c.column: c for c in rule.output}
+        assert set(cols) == {"time", "area", "value"}
+        assert cols["time"].source.role == AxisRole.TIME
+        assert cols["time"].transform == "best_effort_time"
+        assert cols["area"].source.role == AxisRole.AREA
+        assert cols["area"].transform == "passthrough"
+        assert cols["value"].source.role == AxisRole.VALUE
+        assert cols["value"].transform == "passthrough"
+
+    def test_built_rule_is_directly_applicable(self) -> None:
+        # What Layer A builds is exactly what it hands to apply_v2_rule, so
+        # the rule must apply without a separate load/expand step.
+        clf = TableClassification((
+            _axis("time", AxisRole.TIME),
+            _axis("tab", AxisRole.VALUE),
+        ))
+        rule = build_generic_rule(clf)
+        assert rule is not None
+        rows = ({"time": "2020000000", "tab": "020", "value": "126146"},)
+        assert apply_v2_rule(rows, clf, rule) == ({"time": "2020", "value": "126146"},)
+
+    def test_meta_axis_declines(self) -> None:
+        clf = TableClassification((
+            _axis("time", AxisRole.TIME),
+            _axis("cat02", AxisRole.META_AXIS),
+            _axis("tab", AxisRole.VALUE),
+        ))
+        assert build_generic_rule(clf) is None
+
+    def test_unknown_axis_declines(self) -> None:
+        clf = TableClassification((
+            _axis("cat01", AxisRole.UNKNOWN),
+            _axis("tab", AxisRole.VALUE),
+        ))
+        assert build_generic_rule(clf) is None
+
+    def test_repeated_role_declines(self) -> None:
+        # Population's age + sex are two category axes; picking which column
+        # reads which needs #10's where-predicate, so Layer A declines.
+        clf = TableClassification((
+            _axis("time", AxisRole.TIME),
+            _axis("cat01", AxisRole.CATEGORY),
+            _axis("cat03", AxisRole.CATEGORY),
+            _axis("tab", AxisRole.VALUE),
+        ))
+        assert build_generic_rule(clf) is None
+
+    def test_empty_classification_declines(self) -> None:
+        assert build_generic_rule(TableClassification(())) is None
+
+    def test_value_column_name_collision_declines(self) -> None:
+        # A non-value axis whose id is literally "value" would collide with
+        # the value role's "value" column. Decline (→ Layer D) rather than
+        # let RuleV2's duplicate-column check raise on the auto path.
+        clf = TableClassification((
+            _axis("value", AxisRole.CATEGORY),
+            _axis("tab", AxisRole.VALUE),
+        ))
+        assert build_generic_rule(clf) is None

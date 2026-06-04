@@ -1,20 +1,18 @@
 """Tests for the rule= integration into EstatClient.get_stats_data.
 
-The transformation pipeline (Layer 3) plugs into the endpoint client
-(Layer 2). Four behavior modes are tested here:
+The rule engine (Layer 3) plugs into the endpoint client (Layer 2). These
+tests prove the request-path wiring (#28), not the resolver / apply
+mechanics (those have isolated coverage in test_resolver / test_apply_v2 /
+test_layer_d). Behavior modes:
 
 * ``rule=None`` — raw mode (axis_id-keyed dicts, no transformation).
-* ``rule="auto"`` (default) — try the user > project > builtin
-  resolution chain; fall back to Layer D (``"heuristic"``) if nothing
-  matched.
+* ``rule="auto"`` (default) — classify the axes, then resolve through
+  Layers C > B > A > D: a matching v2 rule (user/project, then built-in),
+  else a Layer A generic rule for a clean table, else Layer D.
 * ``rule="heuristic"`` — Layer D fallback (#23): best-effort ``time``
-  normalization plus additive labels, preserving raw data; bypasses
-  builtins.
-* ``rule=Rule(...)`` — full declared transformation, bypassing the
-  resolution chain.
-
-The matcher / transformer mechanics already have isolated coverage;
-these tests prove the modes are wired correctly into the endpoint.
+  normalization plus additive labels, preserving raw data; bypasses rules.
+* ``rule=Rule(...)`` — a v1 rule applied directly (the escape hatch,
+  removed with v1 in #30), bypassing resolution.
 """
 from __future__ import annotations
 
@@ -28,7 +26,7 @@ import httpx
 
 from pyestat._endpoint import EstatClient
 from pyestat._http import EstatHttpClient
-from pyestat._engine.rule import Rule
+from pyestat._engine.rule import Rule, RuleV2
 
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
@@ -83,6 +81,37 @@ def _rule(*, format: str = "yearly", time_id: str = "time") -> Rule:
     )
 
 
+def _meta_axis_payload() -> dict[str, Any]:
+    """A table whose ``tab`` axis carries several value types — a meta-axis.
+
+    Folding it into one record needs the #10 pivot, which this MVP lacks, so
+    ``rule="auto"`` cannot structure it generically and must route to
+    Layer D. Built inline (not an on-disk fixture) because its whole point
+    is a shape the bundled fixtures deliberately avoid.
+    """
+    return {
+        "GET_STATS_DATA": {
+            "RESULT": {"STATUS": 0},
+            "STATISTICAL_DATA": {
+                "RESULT_INF": {"TOTAL_NUMBER": 2},
+                "TABLE_INF": {"@id": "T"},
+                "CLASS_INF": {"CLASS_OBJ": [
+                    {"@id": "tab", "@name": "表章項目", "CLASS": [
+                        {"@code": "001", "@name": "数量"},
+                        {"@code": "002", "@name": "金額"},
+                    ]},
+                    {"@id": "time", "@name": "時間軸（年次）",
+                     "CLASS": {"@code": "2020000000", "@name": "2020年"}},
+                ]},
+                "DATA_INF": {"VALUE": [
+                    {"@tab": "001", "@time": "2020000000", "$": "5"},
+                    {"@tab": "002", "@time": "2020000000", "$": "1000"},
+                ]},
+            },
+        }
+    }
+
+
 class TestRawMode:
     """``rule=None`` must hand back what e-Stat returned, only flattened."""
 
@@ -99,41 +128,65 @@ class TestRawMode:
 
 
 class TestAutoMode:
-    """``rule="auto"`` walks the resolution chain (user > project > builtin)
-    and applies a matching rule; only when nothing matched does it
-    fall back to Layer D (#23). This is the contract DESIGN.md Decision B
-    / ARCHITECTURE.md Rule Resolution Order pin."""
+    """``rule="auto"`` classifies the table and resolves through Layers
+    C > B > A > D. These pin the endpoint wiring: a matching v2 rule wins,
+    a clean unmatched table gets a Layer A generic rule, and a table that
+    cannot be structured falls to Layer D."""
 
-    def test_auto_applies_builtin_when_one_matches(self) -> None:
-        # The bundled population rule expects axes.area; with the area
-        # axis present, ``rule="auto"`` should resolve to that rule
-        # and produce normalized time / cast value fields. This is the
-        # ergonomic default the library promises.
-        client = _make_client(_payload_with_area(_population_payload()))
-        resp = client.get_stats_data("0003448237")  # rule defaults to "auto"
-        row = resp.values[0]
-        assert row["time"] == "2022-01"
-        assert row["time_code"] == "2022000101"
-        assert row["time_granularity"] == "monthly"
-        assert row["value"] == 126146
-        assert isinstance(row["value"], int)
-
-    def test_auto_falls_back_to_layer_d_when_no_builtin_matches(self) -> None:
-        # The fixture's axes (no area) do not satisfy the bundled
-        # population rule's FingerprintMatcher; ``"auto"`` then falls back
-        # to Layer D.
-        client = _make_client(_population_payload())
+    def test_auto_uses_layer_a_generic_when_no_rule_matches(self) -> None:
+        # No v2 rules supplied; the fixture is a clean value+category+time
+        # table, so Layer A builds a generic rule — time normalized by the
+        # role-default, category passed through, and the cell left uncoerced
+        # (Layer A never casts).
+        client = _make_client(_population_payload(), builtin_rules=[])
         resp = client.get_stats_data("0003448237")
-        row = resp.values[0]
-        # Layer D adds *_label fields AND normalizes the classifier-detected
-        # time axis best-effort (the fixture's 2020000000 is yearly), but
-        # never coerces the cell value (data preserved).
-        assert row["tab_label"] == "総人口"
-        assert row["cat01_label"] == "男女計"
+        assert resp.values[0] == {"time": "2020", "cat01": "000", "value": "126146"}
+
+    def test_auto_applies_matching_v2_rule(self) -> None:
+        # A v2 rule whose role_pattern matches the classified table is
+        # selected over the generic. Its explicit yearly transform and the
+        # column name "year" (which Layer A would never emit) are the signal
+        # that the rule, not the generic default, ran.
+        builtin = RuleV2.model_validate({
+            "schema_version": "2",
+            "match": {"role_pattern": ["value", "category", "time"]},
+            "output": [
+                {"column": "year", "source": {"role": "time"}, "transform": "yearly"},
+                {"column": "value", "source": {"role": "value"}, "transform": "passthrough"},
+            ],
+        })
+        client = _make_client(_population_payload(), builtin_rules=[builtin])
+        resp = client.get_stats_data("0003448237")
+        assert resp.values[0] == {"year": "2020", "value": "126146"}
+
+    def test_auto_falls_to_layer_d_when_table_cannot_be_structured(self) -> None:
+        # A multi-value-type tab axis is a meta-axis needing the #10 pivot;
+        # with no pivot, auto routes to Layer D — best-effort time, additive
+        # labels, raw codes and cell preserved, nothing dropped.
+        client = _make_client(_meta_axis_payload(), builtin_rules=[])
+        row = client.get_stats_data("X").values[0]
         assert row["time"] == "2020"
         assert row["time_granularity"] == "yearly"
-        assert row["time_code"] == "2020000000"
-        assert row["value"] == "126146"  # still string — not cast
+        assert row["tab_label"] == "数量"
+        assert row["value"] == "5"
+
+    def test_auto_demotes_to_layer_d_when_matched_rule_cannot_bind(self) -> None:
+        # A builtin matches the role pattern but references a role absent
+        # from the table (area on an area-less table); apply_v2_rule raises
+        # RoleResolutionError, and the auto path demotes to Layer D instead
+        # of surfacing it — the "auto never errors" guarantee.
+        builtin = RuleV2.model_validate({
+            "schema_version": "2",
+            "match": {"role_pattern": ["value", "category", "time"]},
+            "output": [
+                {"column": "area", "source": {"role": "area"}, "transform": "passthrough"},
+            ],
+        })
+        client = _make_client(_population_payload(), builtin_rules=[builtin])
+        row = client.get_stats_data("0003448237").values[0]
+        assert row["tab_label"] == "総人口"  # Layer D output, not a crash
+        assert row["time"] == "2020"
+        assert row["value"] == "126146"
 
 
 class TestHeuristicMode:
@@ -157,7 +210,26 @@ class TestHeuristicMode:
 
 
 class TestExplicitRule:
-    """An explicit Rule bypasses the resolution chain too."""
+    """An explicit rule bypasses resolution. A v1 ``Rule`` runs the legacy
+    pipeline; a v2 ``RuleV2`` is applied against the request-path
+    classification (computed lazily, since the endpoint only classifies up
+    front for ``"auto"``)."""
+
+    def test_applies_explicit_v2_rule(self) -> None:
+        # The declared columns shape the output; resolution is skipped, so
+        # the rule's role_pattern is irrelevant. This also pins the lazy
+        # classify path apply_rule uses for an explicit RuleV2.
+        rule = RuleV2.model_validate({
+            "schema_version": "2",
+            "match": {"role_pattern": ["value", "category", "time"]},
+            "output": [
+                {"column": "yr", "source": {"role": "time"}, "transform": "yearly"},
+                {"column": "value", "source": {"role": "value"}, "transform": "passthrough"},
+            ],
+        })
+        client = _make_client(_population_payload())
+        resp = client.get_stats_data("0003448237", rule=rule)
+        assert resp.values[0] == {"yr": "2020", "value": "126146"}
 
     def test_applies_time_normalizer_and_value_caster(self) -> None:
         # Pinning the full Transformer pipeline output for a yearly
@@ -174,83 +246,58 @@ class TestExplicitRule:
 
 
 class TestUserRules:
-    """``user_rules=`` is the ergonomic on-ramp for caller-defined rules.
+    """``user_rules`` / ``builtin_rules`` feed the v2 resolver's layers.
 
-    Decision E pins the chain user > project > builtin, but only the
-    builtin layer is wired up automatically. ``user_rules`` lets callers
-    inject Python ``Rule`` objects without touching the rule manager
-    directly. The behaviors pinned here:
+    The endpoint must wire them so user (C) shadows builtin (B) on the same
+    role pattern, and an unrelated user rule still lets the builtin fire.
+    The behaviors pinned here:
 
-    * a user rule shadows a builtin that would otherwise match;
-    * a non-matching user rule still lets the builtin chain fire;
+    * a user rule shadows a builtin matching the same role pattern;
+    * a user rule for a different pattern does not block the builtin;
     * the kwarg is optional and defaults to "no user rules".
 
-    User and builtin rules are constructed identically apart from the
-    fields under test; ``value.type`` (``"string"`` vs ``"number"``) is
-    used as the observable signal of which layer won.
+    The single output column's name is the observable signal of which
+    layer won.
     """
 
-    def _string_typed(self) -> Rule:
-        return Rule.model_validate(
+    def _v2(self, *, role_pattern: list[str], column: str) -> RuleV2:
+        return RuleV2.model_validate(
             {
-                "schema_version": "1",
-                "match": {"statsCode": "00200524"},
-                "axes": {"time": {"id": "time", "format": "yearly"}},
-                "value": {"type": "string"},
-            }
-        )
-
-    def _number_typed(self) -> Rule:
-        return Rule.model_validate(
-            {
-                "schema_version": "1",
-                "match": {"statsCode": "00200524"},
-                "axes": {"time": {"id": "time", "format": "yearly"}},
-                "value": {"type": "number"},
+                "schema_version": "2",
+                "match": {"role_pattern": role_pattern},
+                "output": [
+                    {"column": column, "source": {"role": "value"}, "transform": "passthrough"},
+                ],
             }
         )
 
     def test_user_rule_shadows_matching_builtin(self) -> None:
-        # Both layers match the same table; the only observable
-        # difference is value.type. If the user layer wins, the value
-        # is cast to int; otherwise it stays as the e-Stat string.
+        # Both layers match the table's role pattern; the user layer wins,
+        # so its column name is what surfaces.
+        pattern = ["value", "category", "time"]
         client = _make_client(
             _population_payload(),
-            builtin_rules=[self._string_typed()],
-            user_rules=[self._number_typed()],
+            builtin_rules=[self._v2(role_pattern=pattern, column="from_builtin")],
+            user_rules=[self._v2(role_pattern=pattern, column="from_user")],
         )
-        resp = client.get_stats_data("0003448237")
-        assert resp.values[0]["value"] == 126146
-        assert isinstance(resp.values[0]["value"], int)
+        assert set(client.get_stats_data("0003448237").values[0]) == {"from_user"}
 
-    def test_user_rule_does_not_block_unrelated_builtin(self) -> None:
-        # A user rule scoped to a different statsCode must not prevent
-        # the builtin chain from firing on the table at hand; otherwise
-        # one user rule would disable every bundled rule.
-        unrelated = Rule.model_validate(
-            {
-                "schema_version": "1",
-                "match": {"statsCode": "99999999"},
-                "axes": {"time": {"id": "time", "format": "yearly"}},
-                "value": {"type": "number"},
-            }
-        )
+    def test_unrelated_user_rule_does_not_block_builtin(self) -> None:
+        # A user rule for a different role pattern must not prevent the
+        # builtin from firing on the table at hand; otherwise one user rule
+        # would disable every bundled rule.
         client = _make_client(
             _population_payload(),
-            builtin_rules=[self._string_typed()],
-            user_rules=[unrelated],
+            builtin_rules=[self._v2(role_pattern=["value", "category", "time"], column="from_builtin")],
+            user_rules=[self._v2(role_pattern=["time", "area", "value"], column="from_user")],
         )
-        resp = client.get_stats_data("0003448237")
-        # Builtin (value.type=string) wins because the user rule's
-        # statsCode does not match.
-        assert resp.values[0]["value"] == "126146"
+        assert set(client.get_stats_data("0003448237").values[0]) == {"from_builtin"}
 
     def test_omitted_user_rules_preserves_default_behavior(self) -> None:
-        # Smoke test: not passing user_rules must behave identically to
-        # the pre-existing client construction (builtin-only chain).
+        # Smoke test: not passing user_rules must behave identically to the
+        # builtin-only construction.
         client = _make_client(
             _population_payload(),
-            builtin_rules=[self._number_typed()],
+            builtin_rules=[self._v2(role_pattern=["value", "category", "time"], column="from_builtin")],
         )
-        resp = client.get_stats_data("0003448237")
-        assert resp.values[0]["value"] == 126146
+        assert set(client.get_stats_data("0003448237").values[0]) == {"from_builtin"}
