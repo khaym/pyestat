@@ -14,9 +14,8 @@ from typing import Any, Literal
 from pyestat._endpoint import ClassObj
 from pyestat._engine.classifier import AxisRole, TableClassification, classify
 from pyestat._engine.role_defaults import TRANSFORMS, expand_short_form
-from pyestat._engine.rule import OutputColumn, Rule, RuleV2
+from pyestat._engine.rule import OutputColumn, RuleV2
 from pyestat._engine.time import best_effort
-from pyestat._engine.transformers import TimeNormalizer, TransformContext, ValueCaster
 from pyestat.errors import RoleResolutionError, RuleExpansionError
 
 
@@ -24,7 +23,7 @@ def apply_rule(
     values: tuple[dict[str, Any], ...],
     class_objs: Sequence[ClassObj],
     stats_data_id: str,
-    rule: "Rule | RuleV2 | Literal['heuristic'] | None",
+    rule: "RuleV2 | Literal['heuristic'] | None",
     classification: TableClassification | None = None,
 ) -> tuple[dict[str, Any], ...]:
     """Run the requested transformation mode over ``values``.
@@ -37,17 +36,16 @@ def apply_rule(
       normalization plus additive labels, preserving raw data.
     * :class:`RuleV2` — a v2 output-schema rule applied against the
       ``classification`` (which axis plays which role).
-    * :class:`Rule` — a v1 rule applied through the legacy transformer
-      pipeline (the explicit escape hatch, removed with v1 in #30).
 
     ``classification`` is the request-path classification (#28); the
     Layer D and v2 modes need it. When a standalone caller omits it, it is
     computed from the rows here so those modes stay self-contained.
+
+    ``stats_data_id`` is retained for parity with the request path and
+    future per-table diagnostics, though no current mode consults it.
     """
     if rule is None:
         return values
-    if isinstance(rule, Rule):
-        return _apply_full(values, class_objs, stats_data_id, rule)
     if classification is None:
         classification = classify(class_objs, rows=values)
     if rule == "heuristic":
@@ -55,7 +53,7 @@ def apply_rule(
     if isinstance(rule, RuleV2):
         return apply_v2_rule(values, classification, rule)
     raise TypeError(
-        f"rule must be Rule, RuleV2, 'heuristic', or None; got {type(rule).__name__}"
+        f"rule must be RuleV2, 'heuristic', or None; got {type(rule).__name__}"
     )
 
 
@@ -138,32 +136,14 @@ def _label_row(row: dict[str, Any], lookup: dict[str, dict[str, str]]) -> dict[s
     return out
 
 
-def _apply_full(
-    values: tuple[dict[str, Any], ...],
-    class_objs: Sequence[ClassObj],
-    stats_data_id: str,
-    rule: Rule,
-) -> tuple[dict[str, Any], ...]:
-    """Run the bundled Transformer pipeline against an explicit rule."""
-    ctx = TransformContext(
-        stats_data_id=stats_data_id,
-        class_inf={obj.id: obj.classes for obj in class_objs},
-        axes_meta={obj.id: obj.name for obj in class_objs},
-    )
-    rows: Any = iter(values)
-    rows = TimeNormalizer().transform(rows, rule, ctx)
-    rows = ValueCaster().transform(rows, rule, ctx)
-    return tuple(rows)
-
-
 # --- v2 application (output-schema-first, #22) ------------------------------
 #
-# The v2 counterpart of ``_apply_full``. It needs the *classification* (which
-# axis plays which role) to resolve each column's ``source.role`` to an axis;
-# the request-path wiring that runs the classifier and feeds it here is #28,
-# so this function takes the classification as an argument and stays testable
-# in isolation. ``where``-predicate pivot (a role spanning several axes) is
-# #10; until then a referenced role must resolve to exactly one axis.
+# Application needs the *classification* (which axis plays which role) to
+# resolve each column's ``source.role`` to an axis; the request-path wiring
+# that runs the classifier and feeds it here is #28, so this function takes
+# the classification as an argument and stays testable in isolation.
+# ``where``-predicate pivot (a role spanning several axes) is #10; until then
+# a referenced role must resolve to exactly one axis.
 
 
 def apply_v2_rule(

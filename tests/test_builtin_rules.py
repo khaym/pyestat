@@ -1,57 +1,24 @@
 """Tests for the library-bundled rules.
 
-DESIGN.md task #7's success criterion #1 is: "the three benchmark
-tables each have a bundled rule that yields self-describing rows
-when applied". The tests below pin that the three rules exist with
-the expected shape; end-to-end validation against the live API
-lives in the integration suite.
+#30 retired the never-published v1 built-in rules; #29 rewrites the
+three benchmark tables (population estimates, quarterly GDP, foreign
+trade) in v2. Until then the bundle ships no rules, so these tests pin
+only the loader *contract* — every bundled rule is a :class:`RuleV2`.
+The "three benchmark tables are covered" assertion returns with #29.
 """
 from __future__ import annotations
 
-from pyestat import load_builtin_rules
+from pyestat import RuleV2, load_builtin_rules
 
 
-class TestBuiltinRulesPresence:
-    def test_three_benchmark_tables_are_covered(self) -> None:
-        # DESIGN.md commits to population estimates, quarterly GDP,
-        # and foreign trade as the three benchmark tables. If any
-        # of these YAMLs is renamed or removed, this test catches it
-        # before a release.
-        rules = load_builtin_rules()
-        stat_codes = {r.match.statsCode for r in rules}
-        assert {"00200524", "00100409", "00350300"} <= stat_codes
+class TestBuiltinRuleContract:
+    def test_all_bundled_rules_are_v2(self) -> None:
+        # The auto path resolves by role pattern and considers only v2
+        # rules; a stray non-v2 rule in the bundle would silently never
+        # fire. Pinning the type keeps the bundle honest as #29 adds rules.
+        assert all(isinstance(r, RuleV2) for r in load_builtin_rules())
 
-
-class TestBuiltinRuleShapes:
-    """Each bundled rule's MVP-relevant decisions are pinned so a
-    later edit cannot silently change the granularity tag the LLM
-    will see."""
-
-    def _by_stat(self, stat_code: str):
-        for r in load_builtin_rules():
-            if r.match.statsCode == stat_code:
-                return r
-        raise AssertionError(f"no builtin rule for {stat_code}")
-
-    def test_population_uses_monthly_parser(self) -> None:
-        rule = self._by_stat("00200524")
-        assert rule.axes.time.id == "time"
-        assert rule.axes.time.format == "monthly_e_stat"
-        assert rule.axes.area is not None
-        assert rule.value.type == "number"
-
-    def test_gdp_uses_quarterly_parser_without_area(self) -> None:
-        rule = self._by_stat("00100409")
-        assert rule.axes.time.format == "quarterly_e_stat"
-        # GDP has no area axis; encoding ``axes.area`` would make
-        # FingerprintMatcher reject every actual GDP response.
-        assert rule.axes.area is None
-
-    def test_foreign_trade_uses_yearly_parser_with_area(self) -> None:
-        rule = self._by_stat("00350300")
-        assert rule.axes.time.format == "yearly"
-        assert rule.axes.area is not None
-        # value.type stays "number" at MVP — the conditional value
-        # typing that this table really needs is on the Decision-D
-        # expansion list, not in v1 of the schema.
-        assert rule.value.type == "number"
+    def test_bundle_is_currently_empty(self) -> None:
+        # Documents the post-#30 / pre-#29 state explicitly: no v1 remnant
+        # is left loading. This flips to a coverage assertion in #29.
+        assert load_builtin_rules() == []

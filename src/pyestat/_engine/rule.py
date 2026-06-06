@@ -1,17 +1,18 @@
 """Rule schema (Layer 3).
 
-The Rule model is the versioned contract between rule files and the
-engine. ``schema_version`` is pinned at ``"1"`` for MVP; additive
-expansions (new optional fields, new transformer keywords) keep the
-version constant and breaking changes route through the loader's
-migration step.
+A rule is the versioned contract between rule files and the engine.
+``schema_version`` is pinned at ``"2"``: the output-schema-first model
+(:class:`RuleV2`) is the only schema the engine speaks. Additive
+expansions (new optional fields, new transform keywords) keep the
+version constant; breaking changes route through the loader's migration
+step.
 
-The schema deliberately leaves *name resolution* of transformer-side
-references (``axes.time.format``, future ``axes.<id>.standard_code``)
-to the matcher / transformer pipeline rather than catching them at
-load time. This way a rule that ships at the same time as a parser
-is added still loads cleanly on an old library, and the error message
-when the parser is missing carries table context.
+The schema deliberately leaves *name resolution* of transform-side
+references (a column's ``transform`` name) to the application pipeline
+rather than catching them at load time. This way a rule that ships at
+the same time as a transform is added still loads cleanly on an old
+library, and the error message when the transform is missing carries
+table context.
 """
 from __future__ import annotations
 
@@ -28,63 +29,6 @@ class _Strict(BaseModel):
     rule and the author debugs e-Stat instead of their YAML)."""
 
     model_config = ConfigDict(extra="forbid")
-
-
-class MatchRule(_Strict):
-    """Narrowing predicates the matcher pipeline runs (Decision A).
-
-    Only ``statsCode`` ships at MVP; the structural fingerprint is
-    computed by the engine, not stored in the rule, so the rule file
-    stays human-readable.
-    """
-
-    statsCode: str
-
-
-class TimeAxisRule(_Strict):
-    """Specifies which axis carries time semantics and how to parse it.
-
-    ``format`` names a parser registered in
-    :data:`pyestat._engine.time.TIME_PARSERS`. The string is not validated
-    at load time — see the module docstring for the rationale.
-    """
-
-    id: str
-    format: str
-
-
-class AreaAxisRule(_Strict):
-    """Specifies which axis carries area semantics.
-
-    Optional in MVP (GDP has no area axis). ``format`` / ``standard_code``
-    are deferred to the expansion list — see DESIGN.md Decision D.
-    """
-
-    id: str
-
-
-class AxesRule(_Strict):
-    time: TimeAxisRule
-    area: AreaAxisRule | None = None
-
-
-class ValueRule(_Strict):
-    """Cell-value typing. Conditional typing (trade table) is deferred."""
-
-    type: Literal["number", "string"]
-
-
-class Rule(_Strict):
-    """One bundled or user-supplied rule.
-
-    The accompanying loader is responsible for ``schema_version``
-    gating; this model only encodes the structure of version 1.
-    """
-
-    schema_version: Literal["1"]
-    match: MatchRule
-    axes: AxesRule
-    value: ValueRule
 
 
 # --- v2: output-schema-first rules (PROPOSAL-AXIS-ROLE-INFERENCE, #22) ------
@@ -127,9 +71,9 @@ class OutputColumn(_Strict):
 class MatchV2(_Strict):
     """v2 narrowing predicate: the ordered role pattern a table must show.
 
-    The matcher (#28) compares this against the classifier's
-    ``role_pattern``; axis ids never appear, which is what collapses the
-    rule count from O(tables) to O(role patterns).
+    The resolver (#28, ``resolve_v2``) compares this against the
+    classifier's ``role_pattern``; axis ids never appear, which is what
+    collapses the rule count from O(tables) to O(role patterns).
     """
 
     role_pattern: list[AxisRole]

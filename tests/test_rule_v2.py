@@ -1,15 +1,15 @@
 """Tests for the v2 (output-schema-first) rule schema, its short-form
-expansion, and the loader's v1/v2 coexistence (task #22).
+expansion, and the loader's version gate (task #22).
 
-v2 is the format Layer B (built-in) and Layer C (project) rules are
-written in, and the format the rule-authoring Skill (#8) generates. A
-v2 rule declares the *output columns* the caller receives, not the
-input table structure — so these tests pin the accepted long form, the
-short form sugar, and exactly where a malformed rule fails loud.
+v2 is the only schema the engine speaks (#30 retired v1): the format
+Layer B (built-in) and Layer C (project) rules are written in, and the
+format the rule-authoring Skill (#8) generates. A v2 rule declares the
+*output columns* the caller receives, not the input table structure —
+so these tests pin the accepted long form, the short form sugar, and
+exactly where a malformed rule fails loud.
 
-The four-layer wiring that *selects* a v2 rule by role pattern is #28;
-rewriting the built-in rules to v2 and dropping v1 is #29. Here we only
-exercise the schema, the expansion, and the loader gate.
+The four-layer wiring that *selects* a v2 rule by role pattern is #28.
+Here we only exercise the schema, the expansion, and the loader gate.
 """
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ from pydantic import ValidationError
 from pyestat._engine.classifier import AxisRole
 from pyestat._engine.loader import YamlRuleLoader
 from pyestat._engine.role_defaults import expand_short_form
-from pyestat._engine.rule import Rule, RuleV2
+from pyestat._engine.rule import RuleV2
 from pyestat.errors import RuleExpansionError
 
 
@@ -179,7 +179,7 @@ class TestShortFormExpansion:
         assert twice == once
 
 
-class TestLoaderV1V2Coexistence:
+class TestYamlRuleLoader:
     def _write(self, path: Path, body: str) -> Path:
         path.write_text(textwrap.dedent(body), encoding="utf-8")
         return path
@@ -205,9 +205,10 @@ class TestLoaderV1V2Coexistence:
         assert rule.output[0].source.role == AxisRole.TIME
         assert rule.output[0].transform == "best_effort_time"
 
-    def test_still_loads_v1_during_transition(self, tmp_path: Path) -> None:
-        # v2 coexists with v1 until #29 flips the loader to v2-only; a v1
-        # file must keep loading into the v1 Rule model unchanged.
+    def test_v1_file_fails_fast(self, tmp_path: Path) -> None:
+        # #30 retired the never-published v1 schema: a leftover v1 file is
+        # now an unknown version, so it fails loud at load time rather than
+        # silently getting a stale interpretation.
         p = self._write(
             tmp_path / "legacy.yaml",
             """
@@ -217,9 +218,8 @@ class TestLoaderV1V2Coexistence:
             value: {type: number}
             """,
         )
-        rule = YamlRuleLoader().load(p)
-        assert isinstance(rule, Rule)
-        assert rule.match.statsCode == "00200524"
+        with pytest.raises(ValueError, match="schema_version"):
+            YamlRuleLoader().load(p)
 
     def test_unknown_version_still_rejected(self, tmp_path: Path) -> None:
         p = self._write(
@@ -232,3 +232,41 @@ class TestLoaderV1V2Coexistence:
         )
         with pytest.raises(ValueError, match="schema_version"):
             YamlRuleLoader().load(p)
+
+    def test_non_mapping_top_level_rejected(self, tmp_path: Path) -> None:
+        # A file whose top level is a list or scalar is a structural error;
+        # it must fail loud with a clear message rather than an opaque
+        # AttributeError when version gating calls ``data.get``.
+        p = self._write(tmp_path / "list.yaml", "- not\n- a\n- mapping\n")
+        with pytest.raises(ValueError, match="must contain a mapping"):
+            YamlRuleLoader().load(p)
+
+    def test_load_dir_returns_all_yaml_files_sorted(self, tmp_path: Path) -> None:
+        # Sorted load order matters: the resolution chain reports ambiguity
+        # by listing candidate rules, and the built-in loader relies on a
+        # stable, diff-friendly order. The first output column's name is the
+        # observable signal of which file loaded into which slot.
+        self._write(
+            tmp_path / "b.yaml",
+            """
+            schema_version: "2"
+            match: {role_pattern: [value, time]}
+            output: [{column: b_col, source: {role: value}, transform: passthrough}]
+            """,
+        )
+        self._write(
+            tmp_path / "a.yaml",
+            """
+            schema_version: "2"
+            match: {role_pattern: [value, time]}
+            output: [{column: a_col, source: {role: value}, transform: passthrough}]
+            """,
+        )
+        rules = YamlRuleLoader().load_dir(tmp_path)
+        assert [r.output[0].column for r in rules] == ["a_col", "b_col"]
+
+    def test_load_dir_returns_empty_when_dir_missing(self, tmp_path: Path) -> None:
+        # The project-local "rules/" directory is optional; a consumer
+        # without one must get "no project-local rules", not a
+        # FileNotFoundError surfacing from an absent directory.
+        assert YamlRuleLoader().load_dir(tmp_path / "does-not-exist") == []

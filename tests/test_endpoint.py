@@ -156,7 +156,7 @@ class TestParseStatsData:
 
     def test_normalizes_single_class_obj_dict(self) -> None:
         # CLASS_OBJ also collapses to a dict when a table has only one
-        # axis; rule fingerprinting iterates class_objs so this must
+        # axis; the axis classifier iterates class_objs so this must
         # round-trip identically to the multi-axis case.
         payload = {
             "GET_STATS_DATA": {
@@ -311,7 +311,7 @@ class TestMaxRowsGuard:
 
 class TestGetMetaInfo:
     def test_parses_meta_info(self) -> None:
-        # getMetaInfo is the cheap probe rule-fingerprint matching uses
+        # getMetaInfo is the cheap probe for inspecting a table's axes
         # before committing to a 3.8M-row download; the parsed shape
         # must surface axis @id and @name without requiring a data fetch.
         payload = {

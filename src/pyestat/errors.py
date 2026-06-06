@@ -60,13 +60,11 @@ class EstatApiError(EstatError):
 
 
 def _describe_match(rule: object) -> object:
-    """A short, human label for a conflicting rule — its v1 ``statsCode``
-    or its v2 ``role_pattern``, whichever the rule carries — so the error
-    message reads the same shape across both rule schemas."""
+    """A short, human label for a conflicting rule — its ``role_pattern`` —
+    so the ambiguity error names the colliding rules legibly. ``getattr``
+    keeps it total: anything that is not a well-formed rule falls back to
+    its ``repr`` rather than raising inside the error path."""
     match = getattr(rule, "match", None)
-    stats_code = getattr(match, "statsCode", None)
-    if stats_code is not None:
-        return stats_code
     role_pattern = getattr(match, "role_pattern", None)
     if role_pattern is not None:
         return [getattr(role, "value", role) for role in role_pattern]

@@ -1,16 +1,16 @@
 """Tests for the Layer-3 registry abstraction.
 
-Registry is a tiny name-to-impl lookup. Today only TIME_PARSERS uses
-it, but the Decision-D expansion list adds STANDARD_CODES (ISO 8601 /
-JIS / ISO 3166) later, so the abstraction needs to be exercised in
-isolation so a future second instance can be added without surprise.
+Registry is a tiny name-to-impl lookup. These tests exercise the
+primitive in isolation with throwaway instances, so a future second
+instance (e.g. #4's STANDARD_CODES) can be added without surprise. The
+live production instance — ``role_defaults.TRANSFORMS`` — has its own
+content/behavior coverage in ``test_role_defaults.py``.
 """
 from __future__ import annotations
 
 import pytest
 
 from pyestat._engine.registry import Registry, RegistryKeyError
-from pyestat._engine.time import TIME_PARSERS
 
 
 class TestRegistry:
@@ -43,21 +43,3 @@ class TestRegistry:
         r.register("b", 2)
         r.register("a", 1)
         assert r.names() == ["a", "b"]
-
-
-class TestTimeParsersRegistry:
-    def test_three_built_in_parsers_present(self) -> None:
-        # DESIGN.md commits to exactly these three at MVP. Pinning the
-        # set guards against accidental additions slipping into a rule
-        # schema before the schema is bumped.
-        assert set(TIME_PARSERS.names()) == {
-            "monthly_e_stat",
-            "quarterly_e_stat",
-            "yearly",
-        }
-
-    def test_resolved_parser_actually_parses(self) -> None:
-        parser = TIME_PARSERS.resolve("monthly_e_stat")
-        result = parser("2022000101")
-        assert result.normalized == "2022-01"
-        assert result.granularity == "monthly"

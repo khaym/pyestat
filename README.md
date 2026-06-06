@@ -54,24 +54,29 @@ else:
 
 `pyestat` ships built-in transformation rules for a small set of
 tables; pass `user_rules=` to override them or add coverage for a
-table that has none. A user rule that matches the same `statsCode` as
-a builtin shadows that builtin for the call:
+table that has none. A rule declares the **output columns** you want,
+each drawn from an axis *role* the classifier infers — so one rule
+covers every table sharing that role pattern. A user rule matching a
+table's role pattern shadows a built-in for the same pattern:
 
 ```python
-from pyestat import EstatClient, Rule
+from pyestat import EstatClient, RuleV2
 
-custom = Rule.model_validate({
-    "schema_version": "1",
-    "match":  {"statsCode": "00200524"},
-    "axes":   {"time": {"id": "time", "format": "yearly"}},
-    "value":  {"type": "number"},
+custom = RuleV2.model_validate({
+    "schema_version": "2",
+    "match": {"role_pattern": ["value", "area", "time"]},
+    "output": [
+        {"column": "year",   "source": {"role": "time"},  "transform": "yearly"},
+        {"column": "region", "source": {"role": "area"},  "transform": "passthrough"},
+        {"column": "value",  "source": {"role": "value"}, "transform": "passthrough"},
+    ],
 })
 
 client = EstatClient(user_rules=[custom])
 ```
 
 Loading rules from `./rules/*.yaml` is on the roadmap; for now the
-`Rule` object is constructed directly in Python.
+`RuleV2` object is constructed directly in Python.
 
 ## Configuring the appId
 

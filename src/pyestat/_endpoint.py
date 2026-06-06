@@ -13,10 +13,13 @@ from __future__ import annotations
 import math
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from pyestat._http import EstatHttpClient, ProgressEvent
 from pyestat.errors import EstatApiError, TooManyRowsError
+
+if TYPE_CHECKING:
+    from pyestat._engine.rule import RuleV2
 
 
 # --- response models -------------------------------------------------------
@@ -28,8 +31,8 @@ class ClassObj:
 
     ``classes`` is the flattened list of ``CLASS`` entries — ``@code``,
     ``@name``, ``@level``, ``@parentCode``, ``@unit`` etc. with the ``@``
-    prefix stripped. Names are kept raw; normalization for fingerprint
-    matching happens in Layer 3.
+    prefix stripped. Names are kept raw; any normalization (e.g. the
+    axis classifier's NFKC folding) happens in Layer 3.
     """
 
     id: str
@@ -159,9 +162,7 @@ class EstatClient:
     ``"auto"`` path resolves them by role pattern. A user rule matching a
     table's role pattern shadows a built-in for the same pattern; an
     unrelated user rule does not block built-ins from firing on other
-    tables. (v1 :class:`Rule` objects are ignored by ``"auto"`` and
-    reachable only via an explicit ``rule=Rule(...)`` call — v1 is removed
-    in #30.)
+    tables.
     """
 
     def __init__(
@@ -169,8 +170,8 @@ class EstatClient:
         *,
         app_id: str | None = None,
         http: EstatHttpClient | None = None,
-        builtin_rules: "Sequence[Any] | None" = None,
-        user_rules: "Sequence[Any] | None" = None,
+        builtin_rules: "Sequence[RuleV2] | None" = None,
+        user_rules: "Sequence[RuleV2] | None" = None,
     ) -> None:
         if http is None:
             if app_id is None:
@@ -181,18 +182,17 @@ class EstatClient:
         # subsystem may depend on the endpoint module, but not the
         # other way around at module-import time.
         from pyestat._engine.builtin import load_builtin_rules
-        from pyestat._engine.rule import RuleV2
 
-        resolved_builtins = list(builtin_rules) if builtin_rules is not None else load_builtin_rules()
-        resolved_user = list(user_rules) if user_rules is not None else []
-        # The v2 auto path resolves by role pattern, so it considers only v2
-        # rules. Legacy v1 rules (the bundled rules until #29, removed in
-        # #30) are ignored here and reachable only via an explicit
-        # ``rule=Rule(...)`` call. Project-local rules (#15) will populate
-        # the middle layer; until then it is empty.
-        self._user_rules = [r for r in resolved_user if isinstance(r, RuleV2)]
+        # All three layers hold v2 rules; the auto path resolves them by
+        # role pattern. Project-local rules (#15) will populate the middle
+        # layer; until then it is empty.
+        self._user_rules: list[RuleV2] = (
+            list(user_rules) if user_rules is not None else []
+        )
         self._project_rules: list[RuleV2] = []
-        self._builtin_rules = [r for r in resolved_builtins if isinstance(r, RuleV2)]
+        self._builtin_rules: list[RuleV2] = (
+            list(builtin_rules) if builtin_rules is not None else load_builtin_rules()
+        )
 
     # ----- getStatsData -----
 
@@ -200,7 +200,7 @@ class EstatClient:
         self,
         stats_data_id: str,
         *,
-        rule: "Rule | RuleV2 | Literal['auto', 'heuristic'] | None" = "auto",
+        rule: "RuleV2 | Literal['auto', 'heuristic'] | None" = "auto",
         max_rows: int | None = None,
         progress: Callable[[ProgressEvent], None] | None = None,
     ) -> StatsDataResponse:
@@ -223,8 +223,8 @@ class EstatClient:
           lossless output regardless of which built-in rules ship.
         * ``None`` — raw mode. Returns Layer 2's untransformed flattened
           rows verbatim.
-        * :class:`Rule` — apply this rule directly, bypassing the
-          resolution chain.
+        * :class:`RuleV2` — apply this rule directly against the table's
+          classification, bypassing the resolution chain.
 
         When ``max_rows`` is set, a cheap ``cntGetFlg=Y`` probe runs first
         and the call raises :class:`TooManyRowsError` before any data page
@@ -267,9 +267,9 @@ class EstatClient:
             )
             transformed = apply_auto(values, first.class_objs, classification, resolved)
         else:
-            # raw (``None``) and an explicit v1 ``Rule`` never classify;
-            # ``"heuristic"`` and an explicit ``RuleV2`` classify lazily
-            # inside ``apply_rule``, only when the mode actually needs it.
+            # raw (``None``) never classifies; ``"heuristic"`` and an
+            # explicit ``RuleV2`` classify lazily inside ``apply_rule``,
+            # only when the mode actually needs it.
             transformed = apply_rule(values, first.class_objs, stats_data_id, rule)
         return StatsDataResponse(
             stats_data_id=stats_data_id,
@@ -347,8 +347,8 @@ class EstatClient:
     def get_meta_info(self, stats_data_id: str) -> MetaInfoResponse:
         """Fetch axis metadata without downloading data.
 
-        Used by Layer 3's fingerprint matcher to validate a rule's
-        applicability before committing to a potentially huge fetch.
+        Lets a caller inspect a table's axes before committing to a
+        potentially huge fetch.
         """
         payload = self._http.request(
             "/getMetaInfo", params={"statsDataId": stats_data_id}

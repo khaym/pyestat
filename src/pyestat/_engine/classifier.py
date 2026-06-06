@@ -142,7 +142,7 @@ def _cell_kind(cell: Any) -> str:
 
 
 def _norm(text: str) -> str:
-    """NFKC-fold so full/half-width variants compare equal (cf. fingerprint)."""
+    """NFKC-fold so full/half-width variants compare equal."""
     return unicodedata.normalize("NFKC", text)
 
 

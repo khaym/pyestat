@@ -1,20 +1,24 @@
 """Library-bundled rule loader.
 
 Reads every ``*.yaml`` under :mod:`pyestat.rules.builtin` into
-:class:`Rule` instances. Uses ``importlib.resources`` so the loader
+:class:`RuleV2` instances. Uses ``importlib.resources`` so the loader
 works when pyestat is installed from a wheel (where the YAML files
 sit inside ``site-packages``) as well as from a working tree.
+
+#30 removed the never-published v1 built-in rules; the directory ships
+no rules until #29 rewrites the three benchmark tables in v2, so this
+currently returns an empty list.
 """
 from __future__ import annotations
 
 from importlib import resources
 from pathlib import Path
 
-from pyestat._engine.rule import Rule
+from pyestat._engine.rule import RuleV2
 from pyestat._engine.loader import YamlRuleLoader
 
 
-def load_builtin_rules() -> list[Rule]:
+def load_builtin_rules() -> list[RuleV2]:
     """Return every rule shipped under ``pyestat/rules/builtin/``.
 
     Order is by filename so a future ``AmbiguousRuleError`` would list
@@ -22,7 +26,7 @@ def load_builtin_rules() -> list[Rule]:
     """
     loader = YamlRuleLoader()
     root = resources.files("pyestat.rules.builtin")
-    rules: list[Rule] = []
+    rules: list[RuleV2] = []
     for entry in sorted(root.iterdir(), key=lambda p: p.name):
         if entry.name.endswith(".yaml"):
             # importlib.resources files have a ``read_text`` API but

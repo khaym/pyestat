@@ -11,8 +11,8 @@ test_layer_d). Behavior modes:
   else a Layer A generic rule for a clean table, else Layer D.
 * ``rule="heuristic"`` — Layer D fallback (#23): best-effort ``time``
   normalization plus additive labels, preserving raw data; bypasses rules.
-* ``rule=Rule(...)`` — a v1 rule applied directly (the escape hatch,
-  removed with v1 in #30), bypassing resolution.
+* ``rule=RuleV2(...)`` — a v2 rule applied directly (the escape hatch),
+  bypassing resolution.
 """
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ import httpx
 
 from pyestat._endpoint import EstatClient
 from pyestat._http import EstatHttpClient
-from pyestat._engine.rule import Rule, RuleV2
+from pyestat._engine.rule import RuleV2
 
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
@@ -68,17 +68,6 @@ def _payload_with_area(base: dict[str, Any]) -> dict[str, Any]:
             cls["@name"] = "時間軸（年月日現在）"
             cls["CLASS"] = {"@code": "2022000101", "@name": "2022年1月", "@level": "4"}
     return out
-
-
-def _rule(*, format: str = "yearly", time_id: str = "time") -> Rule:
-    return Rule.model_validate(
-        {
-            "schema_version": "1",
-            "match": {"statsCode": "00200524"},
-            "axes": {"time": {"id": time_id, "format": format}},
-            "value": {"type": "number"},
-        }
-    )
 
 
 def _meta_axis_payload() -> dict[str, Any]:
@@ -195,8 +184,8 @@ class TestHeuristicMode:
     builtins ship."""
 
     def test_heuristic_does_not_consult_builtin_rules(self) -> None:
-        # Even on a payload the bundled rule would match, ``"heuristic"``
-        # must skip the rule manager — useful when a caller wants a
+        # Even on a payload a bundled rule would match, ``"heuristic"``
+        # must skip rule resolution — useful when a caller wants a
         # stable shape across pyestat versions.
         client = _make_client(_payload_with_area(_population_payload()))
         resp = client.get_stats_data("0003448237", rule="heuristic")
@@ -210,10 +199,9 @@ class TestHeuristicMode:
 
 
 class TestExplicitRule:
-    """An explicit rule bypasses resolution. A v1 ``Rule`` runs the legacy
-    pipeline; a v2 ``RuleV2`` is applied against the request-path
-    classification (computed lazily, since the endpoint only classifies up
-    front for ``"auto"``)."""
+    """An explicit ``RuleV2`` bypasses resolution and is applied against the
+    request-path classification (computed lazily, since the endpoint only
+    classifies up front for ``"auto"``)."""
 
     def test_applies_explicit_v2_rule(self) -> None:
         # The declared columns shape the output; resolution is skipped, so
@@ -230,19 +218,6 @@ class TestExplicitRule:
         client = _make_client(_population_payload())
         resp = client.get_stats_data("0003448237", rule=rule)
         assert resp.values[0] == {"yr": "2020", "value": "126146"}
-
-    def test_applies_time_normalizer_and_value_caster(self) -> None:
-        # Pinning the full Transformer pipeline output for a yearly
-        # interpretation of the fixture (its time code 2020000000 fits
-        # the yearly_e_stat parser).
-        client = _make_client(_population_payload())
-        resp = client.get_stats_data("0003448237", rule=_rule(format="yearly"))
-        row = resp.values[0]
-        assert row["time"] == "2020"
-        assert row["time_code"] == "2020000000"
-        assert row["time_granularity"] == "yearly"
-        assert row["value"] == 126146
-        assert isinstance(row["value"], int)
 
 
 class TestUserRules:

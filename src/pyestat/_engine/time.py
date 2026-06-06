@@ -1,8 +1,9 @@
 """Built-in time parsers shipped at MVP (Layer 3 helper).
 
 Each parser maps an e-Stat time-axis code into a normalized string
-plus a granularity tag. Parsers are pure functions so the registry
-can hand them around without instantiation overhead.
+plus a granularity tag. Parsers are pure functions, imported and called
+directly; the v2 apply path wraps them as named transforms in
+``role_defaults.TRANSFORMS`` (the single transform registry).
 
 Output convention favors ISO 8601 where it applies (``YYYY-MM``,
 ``YYYY``) and falls back to the widely-recognized ``YYYY-Qn`` notation
@@ -22,10 +23,7 @@ Observed wire shapes (pinned in ``tests/test_time.py``):
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
 from dataclasses import dataclass
-
-from pyestat._engine.registry import Registry
 
 
 @dataclass(frozen=True)
@@ -115,13 +113,3 @@ def best_effort(code: str) -> TimePoint | None:
         except ValueError:
             continue
     return None
-
-
-TimeParser = Callable[[str], TimePoint]
-
-# Pre-populated registry of built-in time parsers. Custom parsers can
-# be added at import time by user code via ``TIME_PARSERS.register``.
-TIME_PARSERS: Registry[TimeParser] = Registry(kind="time parser")
-TIME_PARSERS.register("monthly_e_stat", monthly_e_stat)
-TIME_PARSERS.register("quarterly_e_stat", quarterly_e_stat)
-TIME_PARSERS.register("yearly", yearly)
