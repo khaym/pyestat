@@ -149,10 +149,11 @@ def build_generic_rule(classification: TableClassification) -> RuleV2 | None:
     the table cannot be structured generically and must route to Layer D.
 
     Returns ``None`` when any axis is a ``meta-axis`` (folding it into one
-    record needs the #10 pivot) or ``unknown`` (the classifier's
-    route-to-Layer-D sentinel), or when a role repeats across axes
-    (disambiguating which column reads which axis needs #10's ``where``
-    predicate). Otherwise emits one long-form column per axis: the ``value``
+    record needs an explicit #10 pivot rule, which Layer A never generates)
+    or ``unknown`` (the classifier's route-to-Layer-D sentinel), or when a
+    role repeats across axes (no way to address one of several same-role
+    axes yet — #10's ``where`` disambiguates a meta-axis, not this case).
+    Otherwise emits one long-form column per axis: the ``value``
     role reads the observation cell, every other role reads its own axis,
     and each inherits its role-default transform. Because every default is
     a total transform (see module docstring), the resulting rule cannot

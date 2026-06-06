@@ -178,6 +178,56 @@ class TestAutoMode:
         assert row["value"] == "126146"
 
 
+class TestAutoPivot:
+    """A matched v2 pivot rule folds meta-axis-spread rows end-to-end.
+
+    This pins the request-path wiring specific to #10: the endpoint must
+    thread ``class_objs`` (the meta-member names a ``where`` predicate
+    matches against) from the fetched page through ``apply_auto`` into the
+    pivot. The ``_meta_axis_payload`` tab carries 数量 / 金額, so a builtin
+    rule selecting both collapses its two rows into one record.
+    """
+
+    def test_auto_applies_matching_pivot_rule(self) -> None:
+        pivot = RuleV2.model_validate({
+            "schema_version": "2",
+            "match": {"role_pattern": ["meta-axis", "time"]},
+            "output": [
+                {"column": "time", "source": {"role": "time"}, "transform": "yearly"},
+                {"column": "quantity", "source": {"role": "meta-axis", "where": {"equals": "数量"}}},
+                {"column": "amount", "source": {"role": "meta-axis", "where": {"equals": "金額"}}},
+            ],
+        })
+        client = _make_client(_meta_axis_payload(), builtin_rules=[pivot])
+        out = client.get_stats_data("X").values
+        assert out == ({"time": "2020", "quantity": "5", "amount": "1000"},)
+
+    def test_builtin_pivot_that_cannot_bind_demotes_to_layer_d(self) -> None:
+        # A builtin (Layer B) pivot rule that takes the pivot path (it has a
+        # `where` column) but cannot bind one of its non-meta columns — here
+        # an `area` column on a meta+time table with no area axis raises
+        # RoleResolutionError inside the pivot. The auto path must demote to
+        # Layer D (raw rows preserved), never surfacing the failure of a
+        # library-supplied rule.
+        broken = RuleV2.model_validate({
+            "schema_version": "2",
+            "match": {"role_pattern": ["meta-axis", "time"]},
+            "output": [
+                {"column": "time", "source": {"role": "time"}, "transform": "yearly"},
+                {"column": "quantity", "source": {"role": "meta-axis", "where": {"equals": "数量"}}},
+                # area role is absent from this meta+time table → raises while
+                # the pivot binds its non-meta columns
+                {"column": "area", "source": {"role": "area"}, "transform": "passthrough"},
+            ],
+        })
+        client = _make_client(_meta_axis_payload(), builtin_rules=[broken])
+        row = client.get_stats_data("X").values[0]
+        # Layer D output (additive labels, raw cell preserved), not a crash.
+        assert row["tab_label"] == "数量"
+        assert row["time"] == "2020"
+        assert row["value"] == "5"
+
+
 class TestHeuristicMode:
     """``rule="heuristic"`` invokes Layer D directly, bypassing the
     resolution chain so the output is predictable regardless of which

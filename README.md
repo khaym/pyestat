@@ -75,6 +75,36 @@ custom = RuleV2.model_validate({
 client = EstatClient(user_rules=[custom])
 ```
 
+### Folding spread rows into one record (pivot)
+
+Some tables split one logical record across several rows — a `meta-axis`
+the classifier flags, such as foreign trade's quantity / amount / unit. A
+`where` predicate on a `meta-axis` source folds those rows by the remaining
+axes and selects each measure into its own column, matching on the member
+**name** (not its opaque code):
+
+```python
+trade = RuleV2.model_validate({
+    "schema_version": "2",
+    "match": {"role_pattern": ["category", "meta-axis", "area", "time"]},
+    "output": [
+        {"column": "cat01", "source": {"role": "category"}},
+        {"column": "area",  "source": {"role": "area"}},
+        {"column": "time",  "source": {"role": "time"}, "transform": "yearly"},
+        {"column": "amount_jpy", "source": {"role": "meta-axis", "where": {"equals": "合計_金額"}}},
+        {"column": "quantity",   "source": {"role": "meta-axis", "where": {"equals": "合計_数量2"}}},
+        {"column": "unit",       "source": {"role": "meta-axis", "where": {"equals": "単位2"}}},
+    ],
+})
+```
+
+A measure absent from a group (e.g. a series retired in a base-year
+revision) yields `None` for that column rather than dropping the record, so
+the output shape stays stable across table versions. Conversely, a `where`
+predicate is a projection: meta-axis members you do not select (e.g. a
+table's monthly breakdowns when you keep only the annual totals) are dropped
+from the output — declare a column for every member you need.
+
 Loading rules from `./rules/*.yaml` is on the roadmap; for now the
 `RuleV2` object is constructed directly in Python.
 

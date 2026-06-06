@@ -42,16 +42,41 @@ class _Strict(BaseModel):
 # expansion — not the schema — is what guarantees long form downstream.
 
 
+class MetaWhere(_Strict):
+    """Selects one meta-axis member for a pivot column (#10).
+
+    MVP supports equality against the member *name* (NFKC-normalized at
+    apply time): an author writes the semantic label (e.g. ``"合計_金額"``),
+    not the opaque, table-specific member code. Modeled as an object rather
+    than a bare string so future selectors (member code, set membership)
+    are additive and leave existing rules valid.
+    """
+
+    equals: str
+
+
 class RoleSource(_Strict):
     """Where a v2 output column draws its value from: an axis *role*.
 
     ``role`` reuses the classifier's :class:`AxisRole` vocabulary so a
-    rule and the classifier speak the same language. The ``where``
-    predicate that turns a multi-axis role into a pivot is deferred to
-    #10; until then a referenced role must resolve to exactly one axis.
+    rule and the classifier speak the same language. A ``where`` predicate
+    turns a ``meta-axis`` role into a pivot (#10): rows are folded by the
+    non-meta axes and the predicate picks which member's cell this column
+    receives. ``where`` is valid only on a ``meta-axis`` source; on any
+    other role a referenced role must resolve to exactly one axis.
     """
 
     role: AxisRole
+    where: MetaWhere | None = None
+
+    @model_validator(mode="after")
+    def _where_requires_meta_axis(self) -> "RoleSource":
+        if self.where is not None and self.role != AxisRole.META_AXIS:
+            raise ValueError(
+                "a `where` predicate is only valid on a meta-axis source "
+                f"(got role={self.role.value})"
+            )
+        return self
 
 
 class OutputColumn(_Strict):

@@ -12,11 +12,16 @@ from collections.abc import Callable, Sequence
 from typing import Any, Literal
 
 from pyestat._endpoint import ClassObj
-from pyestat._engine.classifier import AxisRole, TableClassification, classify
+from pyestat._engine.classifier import AxisRole, TableClassification, _norm, classify
 from pyestat._engine.role_defaults import TRANSFORMS, expand_short_form
 from pyestat._engine.rule import OutputColumn, RuleV2
 from pyestat._engine.time import best_effort
 from pyestat.errors import RoleResolutionError, RuleExpansionError
+
+# A ``where`` selector and a meta-axis member name must compare equal despite
+# full/half-width drift; the pivot reuses the classifier's ``_norm`` (NFKC) so
+# matching folds names exactly as the classifier folded them to detect the
+# meta-axis in the first place — the two cannot drift apart.
 
 
 def apply_rule(
@@ -51,7 +56,7 @@ def apply_rule(
     if rule == "heuristic":
         return _apply_layer_d(values, class_objs, classification)
     if isinstance(rule, RuleV2):
-        return apply_v2_rule(values, classification, rule)
+        return apply_v2_rule(values, classification, rule, class_objs=class_objs)
     raise TypeError(
         f"rule must be RuleV2, 'heuristic', or None; got {type(rule).__name__}"
     )
@@ -77,7 +82,7 @@ def apply_auto(
     if resolved is None:
         return _apply_layer_d(values, class_objs, classification)
     try:
-        return apply_v2_rule(values, classification, resolved)
+        return apply_v2_rule(values, classification, resolved, class_objs=class_objs)
     except (RoleResolutionError, RuleExpansionError):
         return _apply_layer_d(values, class_objs, classification)
 
@@ -142,29 +147,111 @@ def _label_row(row: dict[str, Any], lookup: dict[str, dict[str, str]]) -> dict[s
 # resolve each column's ``source.role`` to an axis; the request-path wiring
 # that runs the classifier and feeds it here is #28, so this function takes
 # the classification as an argument and stays testable in isolation.
-# ``where``-predicate pivot (a role spanning several axes) is #10; until then
-# a referenced role must resolve to exactly one axis.
+#
+# Two shapes share this entry point. The default is 1:1 — one output row per
+# input row — where a referenced role must resolve to exactly one axis. When a
+# column's ``meta-axis`` source carries a ``where`` predicate, the rule pivots
+# (#10): rows are folded by the non-meta axes into one record per group and
+# each predicate selects a member's cell. ``class_objs`` carries the meta-axis
+# member names the predicate matches against (by NFKC-normalized name).
 
 
 def apply_v2_rule(
     values: tuple[dict[str, Any], ...],
     classification: TableClassification,
     rule: RuleV2,
+    class_objs: Sequence[ClassObj] | None = None,
 ) -> tuple[dict[str, Any], ...]:
     """Apply a v2 rule's output-column declarations to ``values``.
 
     Expands the rule defensively first, so a short-form rule (e.g. a
     Layer A rule #28 builds in memory) applies without a separate load
-    step. Raises :class:`RoleResolutionError` — a typed, catchable error
-    — when a column's role is absent or ambiguous, so the auto path can
-    fall back to Layer D rather than surface the failure.
+    step. A rule with any ``where``-predicate column pivots (N:1, #10);
+    otherwise each input row maps to one output row (1:1).
+
+    Raises :class:`RoleResolutionError` — a typed, catchable error — when a
+    column's role is absent or ambiguous, when a pivot lacks the metadata or
+    a single meta-axis it needs, so the auto path can fall back to Layer D
+    rather than surface the failure.
     """
     rule = expand_short_form(rule)
     role_to_axes: dict[AxisRole, list[str]] = defaultdict(list)
     for axis in classification.axes:
         role_to_axes[axis.role].append(axis.axis_id)
+    if any(col.source.where is not None for col in rule.output):
+        return _apply_pivot(values, classification, rule, role_to_axes, class_objs)
     plan = [(col.column, _resolve_source(col, role_to_axes)) for col in rule.output]
     return tuple({column: read(row) for column, read in plan} for row in values)
+
+
+def _apply_pivot(
+    values: tuple[dict[str, Any], ...],
+    classification: TableClassification,
+    rule: RuleV2,
+    role_to_axes: dict[AxisRole, list[str]],
+    class_objs: Sequence[ClassObj] | None,
+) -> tuple[dict[str, Any], ...]:
+    """Fold meta-axis-spread rows into one record per non-meta group (#10).
+
+    Groups ``values`` by the codes of every non-meta axis, then for each
+    group emits one row: non-meta columns read the group's shared codes, and
+    each ``where`` column selects the member whose (NFKC-normalized) name
+    matches and surfaces its cell — ``None`` when that member is absent from
+    the group, so a dropped measure (e.g. CPI's retired weight series) leaves
+    a stable column rather than dropping the record.
+    """
+    meta_axes = role_to_axes.get(AxisRole.META_AXIS, [])
+    if len(meta_axes) != 1:
+        raise RoleResolutionError(
+            role="meta-axis",
+            reason=f"pivot needs exactly one meta-axis, found {meta_axes or 'none'}",
+        )
+    meta_id = meta_axes[0]
+    if class_objs is None:
+        raise RoleResolutionError(
+            role="meta-axis",
+            reason="pivot needs class metadata to match `where` by member name",
+        )
+    name_by_code = {
+        c["code"]: _norm(str(c.get("name", c["code"])))
+        for obj in class_objs
+        if obj.id == meta_id
+        for c in obj.classes
+        if "code" in c
+    }
+    group_axis_ids = [
+        a.axis_id for a in classification.axes if a.role != AxisRole.META_AXIS
+    ]
+    nonmeta_plan = [
+        (col.column, _resolve_source(col, role_to_axes))
+        for col in rule.output
+        if col.source.where is None
+    ]
+    meta_plan = [
+        (col.column, _norm(col.source.where.equals), TRANSFORMS.resolve(col.transform))
+        for col in rule.output
+        if col.source.where is not None
+    ]
+
+    groups: dict[tuple, list[dict[str, Any]]] = {}
+    for row in values:
+        key = tuple(row.get(aid) for aid in group_axis_ids)
+        groups.setdefault(key, []).append(row)
+
+    out: list[dict[str, Any]] = []
+    for rows in groups.values():
+        rep = rows[0]
+        record = {column: read(rep) for column, read in nonmeta_plan}
+        cell_by_name: dict[str, Any] = {}
+        for row in rows:
+            name = name_by_code.get(row.get(meta_id))
+            if name is not None and name not in cell_by_name:
+                cell_by_name[name] = row.get("value")
+        for column, target, transform in meta_plan:
+            raw = cell_by_name.get(target)
+            record[column] = transform(raw) if raw is not None else None
+        out.append(record)
+    return tuple(out)
 
 
 def _resolve_source(
@@ -176,8 +263,17 @@ def _resolve_source(
     (``value``), not an axis code — the classifier assigns VALUE to the
     single-member ``tab`` axis, but the number lives under ``value`` in
     Layer 2's flattened row.
+
+    A bare ``meta-axis`` source (no ``where``) cannot bind to a single
+    member, so it raises here; the pivot path handles ``where`` columns
+    before reaching this function.
     """
     role = col.source.role
+    if role == AxisRole.META_AXIS:
+        raise RoleResolutionError(
+            role=role.value,
+            reason="a meta-axis output column needs a `where` predicate to select a member (#10)",
+        )
     transform = TRANSFORMS.resolve(col.transform)
     if role == AxisRole.VALUE:
         key = "value"
@@ -193,7 +289,8 @@ def _resolve_source(
                 role=role.value,
                 reason=(
                     f"multiple axes are classified as {role.value} ({axes}); "
-                    "disambiguating needs a where-predicate pivot (#10)"
+                    "#10's where predicate disambiguates a meta-axis, not a "
+                    "repeated non-meta role, which is not yet addressable"
                 ),
             )
         key = axes[0]

@@ -94,6 +94,52 @@ class TestRuleV2Schema:
             )
 
 
+class TestPivotWhereSchema:
+    """The ``where`` predicate (#10) selects one meta-axis member for a
+    pivot column. It is valid only on a ``meta-axis`` source, matches on the
+    member *name* (the apply step NFKC-normalizes), and is modeled as an
+    object so future selectors stay additive."""
+
+    def test_where_predicate_parses_on_meta_axis_source(self) -> None:
+        rule = RuleV2.model_validate(_long(
+            match={"role_pattern": ["meta-axis", "time"]},
+            output=[
+                {"column": "time", "source": {"role": "time"}, "transform": "yearly"},
+                {"column": "amount_jpy",
+                 "source": {"role": "meta-axis", "where": {"equals": "合計_金額"}},
+                 "transform": "passthrough"},
+            ],
+        ))
+        source = rule.output[1].source
+        assert source is not None
+        assert source.role == AxisRole.META_AXIS
+        assert source.where is not None
+        assert source.where.equals == "合計_金額"
+
+    def test_where_on_non_meta_axis_source_rejected(self) -> None:
+        # A `where` on a time/area/value source is an authoring error: only
+        # a meta-axis carries members to select among. Fail loud at load.
+        with pytest.raises(ValidationError, match="meta-axis"):
+            RuleV2.model_validate(_long(output=[
+                {"column": "time",
+                 "source": {"role": "time", "where": {"equals": "2020年"}},
+                 "transform": "yearly"},
+            ]))
+
+    def test_unknown_where_field_rejected(self) -> None:
+        # Same fail-loud stance as the rest of the schema: a misspelled
+        # selector key must not silently widen the match to everything.
+        with pytest.raises(ValidationError):
+            RuleV2.model_validate(_long(
+                match={"role_pattern": ["meta-axis", "time"]},
+                output=[
+                    {"column": "time", "source": {"role": "time"}, "transform": "yearly"},
+                    {"column": "x",
+                     "source": {"role": "meta-axis", "where": {"eq": "合計_金額"}}},
+                ],
+            ))
+
+
 class TestShortFormExpansion:
     def test_unspecified_transform_falls_back_to_role_default(self) -> None:
         # A column that names its source but omits transform inherits the
@@ -160,6 +206,28 @@ class TestShortFormExpansion:
         )
         assert rule.output[0].source is not None
         assert rule.output[0].source.role == AxisRole.CATEGORY
+
+    def test_meta_axis_where_column_keeps_where_and_defaults_passthrough(self) -> None:
+        # A pivot column (#10) names a meta-axis source with a `where`
+        # selector and usually omits the transform. Expansion must preserve
+        # the predicate and fill the meta-axis role-default (passthrough) —
+        # the selected member's cell is surfaced verbatim, not parsed.
+        rule = expand_short_form(
+            RuleV2.model_validate(_long(
+                match={"role_pattern": ["meta-axis", "time"]},
+                output=[
+                    {"column": "time"},
+                    {"column": "amount_jpy",
+                     "source": {"role": "meta-axis", "where": {"equals": "合計_金額"}}},
+                ],
+            ))
+        )
+        amount = rule.output[1]
+        assert amount.source is not None
+        assert amount.source.role == AxisRole.META_AXIS
+        assert amount.source.where is not None
+        assert amount.source.where.equals == "合計_金額"
+        assert amount.transform == "passthrough"
 
     def test_duplicate_output_column_names_rejected(self) -> None:
         # Two columns sharing a name would collapse at apply time (a dict

@@ -108,11 +108,13 @@ class RuleExpansionError(EstatError):
 class RoleResolutionError(EstatError):
     """A v2 rule references a role the classification cannot pin to one axis.
 
-    Either no axis carries the role (e.g. an ``area`` column on an
-    area-less table) or several do (the pivot case, #10, which needs a
-    ``where`` predicate this MVP does not have). Typed so the auto-path
-    wiring (#28) catches it and falls back to Layer D — preserving the
-    caller's data — rather than letting it surface.
+    Raised when no axis carries the role (e.g. an ``area`` column on an
+    area-less table), when a repeated non-meta role stays ambiguous (no way
+    to address one of several same-role axes yet), or when a ``meta-axis``
+    pivot (#10) cannot bind — a missing/duplicate meta-axis, a ``where``-less
+    meta column, or absent class metadata. Typed so the auto-path wiring
+    (#28) catches it and falls back to Layer D — preserving the caller's
+    data — rather than letting it surface.
     """
 
     def __init__(self, *, role: object, reason: str) -> None:
