@@ -30,7 +30,13 @@ from pyestat._engine.classifier import (
     TableClassification,
 )
 from pyestat._engine.rule import RuleV2
-from pyestat.errors import RoleResolutionError
+from pyestat.errors import (
+    EstatError,
+    RoleResolutionError,
+    RuleAuthoringError,
+    RuleExpansionError,
+    UnknownTransformError,
+)
 
 
 def _axis(axis_id: str, role: AxisRole) -> AxisClassification:
@@ -133,6 +139,60 @@ class TestApplyV2RoleResolution:
         ])
         with pytest.raises(RoleResolutionError, match="multiple"):
             apply_v2_rule(_ROWS, two_cats, rule)
+
+
+class TestUnknownTransform:
+    """A transform name the registry does not know is an authoring error that
+    must surface as a typed :class:`UnknownTransformError` (#32) — never the
+    registry's bare ``KeyError``, which would slip past the auto path's
+    typed-error handling and crash the caller."""
+
+    def test_unknown_transform_raises_typed_error_naming_the_column(self) -> None:
+        # A typo'd transform on a 1:1 column. The error names the offending
+        # column and the bad transform so the author can fix the rule.
+        rule = _rule([
+            {"column": "time", "source": {"role": "time"}, "transform": "yrealy"},
+        ])
+        with pytest.raises(UnknownTransformError, match="time") as exc:
+            apply_v2_rule(_ROWS, _CLASSIFICATION, rule)
+        assert exc.value.column == "time"
+        assert exc.value.transform == "yrealy"
+
+    def test_unknown_transform_is_an_estaterror_not_a_keyerror(self) -> None:
+        # The contract that lets the auto path catch it as a typed error and
+        # keeps a stray KeyError from leaking to the caller.
+        rule = _rule([
+            {"column": "value", "source": {"role": "value"}, "transform": "nope"},
+        ])
+        with pytest.raises(UnknownTransformError) as exc:
+            apply_v2_rule(_ROWS, _CLASSIFICATION, rule)
+        assert isinstance(exc.value, EstatError)
+        assert isinstance(exc.value, RuleAuthoringError)
+        assert not isinstance(exc.value, KeyError)
+
+    def test_unknown_transform_on_a_pivot_meta_column_also_raises_typed(self) -> None:
+        # The pivot path resolves transforms for its `where` columns through
+        # the same guard, so a typo there is typed too (not a KeyError from a
+        # different code path).
+        rule = _pivot_rule([
+            {"column": "time", "source": {"role": "time"}, "transform": "yearly"},
+            {"column": "amount", "source": {"role": "meta-axis", "where": {"equals": "合計_金額"}}, "transform": "nope"},
+        ])
+        with pytest.raises(UnknownTransformError, match="amount"):
+            apply_v2_rule(
+                _PIVOT_ROWS, _PIVOT_CLASSIFICATION, rule, class_objs=_PIVOT_CLASS_OBJS,
+            )
+
+
+class TestRuleAuthoringErrorHierarchy:
+    def test_apply_time_authoring_errors_share_one_base(self) -> None:
+        # apply_auto catches RuleAuthoringError, so the surface/degrade policy
+        # covers every leaf — and a future leaf (e.g. #4's standard-code
+        # errors) — without editing the except clause. Pin the hierarchy that
+        # guarantee rests on.
+        assert issubclass(RoleResolutionError, RuleAuthoringError)
+        assert issubclass(RuleExpansionError, RuleAuthoringError)
+        assert issubclass(UnknownTransformError, RuleAuthoringError)
 
 
 class TestLayerAGenericRuleNeverRaises:

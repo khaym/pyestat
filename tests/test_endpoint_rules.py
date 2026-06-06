@@ -23,10 +23,12 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+import pytest
 
 from pyestat._endpoint import EstatClient
 from pyestat._http import EstatHttpClient
 from pyestat._engine.rule import RuleV2
+from pyestat.errors import RoleResolutionError, UnknownTransformError
 
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
@@ -162,8 +164,10 @@ class TestAutoMode:
     def test_auto_demotes_to_layer_d_when_matched_rule_cannot_bind(self) -> None:
         # A builtin matches the role pattern but references a role absent
         # from the table (area on an area-less table); apply_v2_rule raises
-        # RoleResolutionError, and the auto path demotes to Layer D instead
-        # of surfacing it — the "auto never errors" guarantee.
+        # RoleResolutionError, and because the failing rule is library-supplied
+        # (Layer B) the auto path demotes to Layer D instead of surfacing it
+        # (#32). A user rule in the same spot would surface — see
+        # TestAutoFailurePolicy.
         builtin = RuleV2.model_validate({
             "schema_version": "2",
             "match": {"role_pattern": ["value", "category", "time"]},
@@ -228,6 +232,83 @@ class TestAutoPivot:
         assert row["value"] == "5"
 
 
+class TestAutoFailurePolicy:
+    """``rule="auto"`` routes a rule-application failure by provenance (#32):
+    a caller-authored rule (``user_rules``, Layer C) surfaces the typed error
+    so the caller can fix it; a library-supplied rule (built-in, Layer B)
+    degrades to Layer D, since the caller cannot fix it and preserved data
+    beats a crash. ``docs/DESIGN.md`` Decision B is the source of truth.
+
+    The population fixture classifies as ``value + category + time``; each
+    rule below matches that pattern so resolution selects it, and the failure
+    happens at apply time — the seam the policy governs.
+    """
+
+    _PATTERN = ["value", "category", "time"]
+
+    def test_surfaces_user_rule_that_cannot_bind(self) -> None:
+        # A user rule references `area`, absent from this area-less table.
+        # Because the caller wrote it, the failure surfaces (contrast the
+        # builtin in TestAutoMode, which demotes to Layer D).
+        user = RuleV2.model_validate({
+            "schema_version": "2",
+            "match": {"role_pattern": self._PATTERN},
+            "output": [{"column": "area", "source": {"role": "area"}, "transform": "passthrough"}],
+        })
+        client = _make_client(_population_payload(), builtin_rules=[], user_rules=[user])
+        with pytest.raises(RoleResolutionError, match="area"):
+            client.get_stats_data("0003448237")
+
+    def test_surfaces_unknown_transform_in_user_rule(self) -> None:
+        # A typo'd transform in a caller-authored rule surfaces as a typed
+        # UnknownTransformError, not a stray KeyError, so the caller can fix it.
+        user = RuleV2.model_validate({
+            "schema_version": "2",
+            "match": {"role_pattern": self._PATTERN},
+            "output": [
+                {"column": "year", "source": {"role": "time"}, "transform": "yrealy"},
+                {"column": "value", "source": {"role": "value"}, "transform": "passthrough"},
+            ],
+        })
+        client = _make_client(_population_payload(), builtin_rules=[], user_rules=[user])
+        with pytest.raises(UnknownTransformError, match="year"):
+            client.get_stats_data("0003448237")
+
+    def test_degrades_unknown_transform_in_builtin_to_layer_d(self) -> None:
+        # The same typo in a built-in rule is the library's bug, not the
+        # caller's; auto degrades to Layer D (raw cell preserved) rather than
+        # crashing the caller with an error they have no power to resolve.
+        builtin = RuleV2.model_validate({
+            "schema_version": "2",
+            "match": {"role_pattern": self._PATTERN},
+            "output": [
+                {"column": "year", "source": {"role": "time"}, "transform": "yrealy"},
+                {"column": "value", "source": {"role": "value"}, "transform": "passthrough"},
+            ],
+        })
+        client = _make_client(_population_payload(), builtin_rules=[builtin])
+        row = client.get_stats_data("0003448237").values[0]
+        assert row["tab_label"] == "総人口"  # Layer D output, not a crash
+        assert row["time"] == "2020"
+        assert row["value"] == "126146"
+
+    def test_degrades_conflicting_builtins_instead_of_crashing(self) -> None:
+        # Two built-ins claiming one role pattern is a library packaging bug;
+        # the auto path must not crash the caller with AmbiguousRuleError. It
+        # skips the conflicted builtin layer and falls through to a Layer A
+        # generic rule for this clean value+category+time table.
+        def _dup(column: str) -> RuleV2:
+            return RuleV2.model_validate({
+                "schema_version": "2",
+                "match": {"role_pattern": self._PATTERN},
+                "output": [{"column": column, "source": {"role": "value"}, "transform": "passthrough"}],
+            })
+
+        client = _make_client(_population_payload(), builtin_rules=[_dup("a"), _dup("b")])
+        row = client.get_stats_data("0003448237").values[0]
+        assert row == {"time": "2020", "cat01": "000", "value": "126146"}
+
+
 class TestHeuristicMode:
     """``rule="heuristic"`` invokes Layer D directly, bypassing the
     resolution chain so the output is predictable regardless of which
@@ -268,6 +349,20 @@ class TestExplicitRule:
         client = _make_client(_population_payload())
         resp = client.get_stats_data("0003448237", rule=rule)
         assert resp.values[0] == {"yr": "2020", "value": "126146"}
+
+    def test_explicit_rule_that_cannot_bind_surfaces_typed_error(self) -> None:
+        # An explicit rule is caller-authored: a binding failure surfaces as a
+        # typed EstatError (no resolution chain, no Layer D demotion) so the
+        # caller can fix the rule they passed (#32). Here `area` is absent from
+        # the area-less population table.
+        rule = RuleV2.model_validate({
+            "schema_version": "2",
+            "match": {"role_pattern": ["value", "category", "time"]},
+            "output": [{"column": "area", "source": {"role": "area"}, "transform": "passthrough"}],
+        })
+        client = _make_client(_population_payload())
+        with pytest.raises(RoleResolutionError, match="area"):
+            client.get_stats_data("0003448237", rule=rule)
 
 
 class TestUserRules:

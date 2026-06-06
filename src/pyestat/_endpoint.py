@@ -213,7 +213,11 @@ class EstatClient:
           (user/project, then built-in), else a generic rule built from the
           classified roles (Layer A), else the Layer D fallback when the
           table cannot be structured (a low-confidence axis, or a shape
-          needing a pivot this MVP lacks).
+          needing a pivot this MVP lacks). A rule *you* supplied via
+          ``user_rules`` that then fails to apply surfaces as a typed
+          :class:`EstatError` so you can fix it; a built-in or generic rule
+          that fails degrades to Layer D instead (``docs/DESIGN.md``
+          Decision B).
         * ``"heuristic"`` — Layer D fallback. The axis classifier detects
           the ``time`` axis and normalizes it best-effort; every axis gets
           a ``{axis_id}_label`` field. Raw codes are preserved, the cell

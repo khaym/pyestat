@@ -1,13 +1,25 @@
 """Exception hierarchy for pyestat.
 
 A small surface, deliberately. Three concrete leaves cover the
-distinctions callers actually need to act on:
+transport- and query-level distinctions callers act on:
 
 * :class:`HttpRetryExhaustedError` — transport is broken; back off.
 * :class:`EstatApiError` — the API rejected the *query* (bad statsDataId,
   unknown parameter); the request itself succeeded.
 * :class:`TooManyRowsError` — the table exists but is bigger than the
   caller is willing to pull; raised before any data is downloaded.
+
+A second group, :class:`RuleAuthoringError` and its leaves
+(:class:`RoleResolutionError`, :class:`RuleExpansionError`,
+:class:`UnknownTransformError`), reports a rule that cannot be applied as
+authored. On the ``rule="auto"`` path, whether such a failure surfaces or
+quietly degrades to the lossless Layer D fallback turns on *who authored
+the failing rule*: a rule the caller passed or wrote (an explicit
+``rule=``, or a user / project rule) surfaces so they can fix it; a
+library-provided rule (a built-in, or the generic rule derived from axis
+roles) degrades, since the caller cannot fix it and preserved raw data
+beats a crash. See ``docs/DESIGN.md`` Decision B for the full policy and
+its decision table.
 
 All inherit from :class:`EstatError` so a coarse ``except EstatError`` is
 enough when the caller does not need to discriminate.
@@ -88,15 +100,29 @@ class AmbiguousRuleError(EstatError):
         self.matched_rules = matched_rules
 
 
-class RuleExpansionError(EstatError):
+class RuleAuthoringError(EstatError):
+    """A rule cannot be applied as authored.
+
+    The shared base of the ways a single rule fails at apply time —
+    :class:`RoleResolutionError`, :class:`RuleExpansionError`, and
+    :class:`UnknownTransformError`. Grouping them lets the ``rule="auto"``
+    path catch the whole category in one place and route it by provenance
+    (a caller-authored rule surfaces, a library-provided one degrades to
+    Layer D — see ``docs/DESIGN.md`` Decision B), and lets a caller catch
+    the category with a single ``except``. Whether such an error reaches
+    the caller therefore depends on who authored the rule, not on the leaf
+    type.
+    """
+
+
+class RuleExpansionError(RuleAuthoringError):
     """A v2 short-form rule column could not be expanded to long form.
 
     Raised at rule-load / expansion time — an *authoring* error (the
-    column omits its source yet its name is not a role to infer one
-    from). It is a typed :class:`EstatError` so the auto-path wiring
-    (#28) can tell it apart from a genuine I/O failure; in practice the
-    auto path never surfaces it to a caller, because built-in rules are
-    validated in CI and explicitly-passed rules are the caller's own.
+    column omits its source yet its name is not a role to infer one from).
+    As a :class:`RuleAuthoringError`, whether the auto path surfaces it or
+    degrades to Layer D follows the provenance policy (see that base and
+    ``docs/DESIGN.md`` Decision B).
     """
 
     def __init__(self, *, column: str, reason: str) -> None:
@@ -105,22 +131,43 @@ class RuleExpansionError(EstatError):
         self.reason = reason
 
 
-class RoleResolutionError(EstatError):
+class RoleResolutionError(RuleAuthoringError):
     """A v2 rule references a role the classification cannot pin to one axis.
 
     Raised when no axis carries the role (e.g. an ``area`` column on an
     area-less table), when a repeated non-meta role stays ambiguous (no way
     to address one of several same-role axes yet), or when a ``meta-axis``
     pivot (#10) cannot bind — a missing/duplicate meta-axis, a ``where``-less
-    meta column, or absent class metadata. Typed so the auto-path wiring
-    (#28) catches it and falls back to Layer D — preserving the caller's
-    data — rather than letting it surface.
+    meta column, or absent class metadata. As a :class:`RuleAuthoringError`,
+    the auto path surfaces or degrades it by provenance (``docs/DESIGN.md``
+    Decision B).
     """
 
     def __init__(self, *, role: object, reason: str) -> None:
         super().__init__(f"cannot resolve role {role!r}: {reason}")
         self.role = role
         self.reason = reason
+
+
+class UnknownTransformError(RuleAuthoringError):
+    """A v2 rule column names a transform the registry does not know.
+
+    A rule-authoring error — a typo, or a transform a newer pyestat
+    registers that this version lacks. As a :class:`RuleAuthoringError` it
+    is routed by provenance on the auto path (``docs/DESIGN.md`` Decision
+    B), and being typed it never reaches a caller as a bare ``KeyError``.
+    Carries the offending column and the known transform names so the
+    message is actionable.
+    """
+
+    def __init__(self, *, column: str, transform: str, known: list[str]) -> None:
+        super().__init__(
+            f"unknown transform {transform!r} for output column {column!r} "
+            f"(known: {known})"
+        )
+        self.column = column
+        self.transform = transform
+        self.known = known
 
 
 class TooManyRowsError(EstatError):

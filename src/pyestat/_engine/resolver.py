@@ -17,15 +17,52 @@ pattern itself is unreliable) or no rule — specific or generic — could be
 produced. The endpoint owns the actual Layer D call, so this module stays
 free of request plumbing and is unit-testable from a hand-built
 classification.
+
+A non-``None`` result is a :class:`ResolvedRule` pairing the rule with the
+*layer* it came from. The layer is the provenance the auto path needs to
+decide, when applying the rule fails, whether to surface the failure (a
+rule the caller authored) or degrade to Layer D (a library-provided rule);
+see ``docs/DESIGN.md`` Decision B.
 """
 from __future__ import annotations
 
 from collections.abc import Sequence
+from enum import Enum
+from typing import NamedTuple
 
 from pyestat._engine.classifier import Confidence, TableClassification
 from pyestat._engine.role_defaults import build_generic_rule
 from pyestat._engine.rule import RuleV2
 from pyestat.errors import AmbiguousRuleError
+
+
+class RuleLayer(Enum):
+    """Which resolution layer produced a rule (Decision E).
+
+    The distinction the auto path acts on is *caller-authored* (user /
+    project) versus *library-provided* (builtin / generic) — see
+    :attr:`is_caller_authored`. The four values are kept distinct so
+    diagnostics and future policy can tell the layers apart.
+    """
+
+    USER = "user"
+    PROJECT = "project"
+    BUILTIN = "builtin"
+    GENERIC = "generic"
+
+    @property
+    def is_caller_authored(self) -> bool:
+        """True for rules the caller passed or wrote (user / project), whose
+        application failures surface; False for library-provided rules
+        (builtin / generic), whose failures degrade to Layer D."""
+        return self in (RuleLayer.USER, RuleLayer.PROJECT)
+
+
+class ResolvedRule(NamedTuple):
+    """A resolved rule and the layer it was resolved from."""
+
+    rule: RuleV2
+    layer: RuleLayer
 
 
 def resolve_v2(
@@ -36,20 +73,38 @@ def resolve_v2(
     builtin: Sequence[RuleV2] = (),
     threshold: Confidence = Confidence.MEDIUM,
     stats_data_id: str = "",
-) -> RuleV2 | None:
+) -> ResolvedRule | None:
     """Resolve the rule for a classified table, or ``None`` for Layer D.
 
-    See the module docstring for the resolution order and the meaning of a
-    ``None`` return. ``stats_data_id`` only labels an
-    :class:`AmbiguousRuleError`.
+    See the module docstring for the resolution order, the provenance the
+    :class:`ResolvedRule` layer carries, and the meaning of a ``None``
+    return. ``stats_data_id`` only labels an :class:`AmbiguousRuleError`.
     """
     if not classification.clears(threshold):
         return None
     pattern = list(classification.role_pattern)
-    for layer in (user, project, builtin):
-        matched = [rule for rule in layer if list(rule.match.role_pattern) == pattern]
+    for rules, layer in (
+        (user, RuleLayer.USER),
+        (project, RuleLayer.PROJECT),
+        (builtin, RuleLayer.BUILTIN),
+    ):
+        matched = [rule for rule in rules if list(rule.match.role_pattern) == pattern]
         if len(matched) > 1:
-            raise AmbiguousRuleError(stats_data_id=stats_data_id, matched_rules=matched)
+            # A same-layer conflict follows the surface/degrade policy by
+            # provenance (DESIGN.md Decision B): a caller-authored layer
+            # (user / project) surfaces so the caller can fix their rules; a
+            # library layer (builtin) is a packaging bug the caller cannot
+            # fix, so skip it and fall through to a generic rule or Layer D
+            # rather than crash. (Built-in conflicts are meant to be caught
+            # in CI; degrading keeps a release-time slip from breaking calls.)
+            if layer.is_caller_authored:
+                raise AmbiguousRuleError(
+                    stats_data_id=stats_data_id, matched_rules=matched
+                )
+            continue
         if matched:
-            return matched[0]
-    return build_generic_rule(classification)
+            return ResolvedRule(matched[0], layer)
+    generic = build_generic_rule(classification)
+    if generic is None:
+        return None
+    return ResolvedRule(generic, RuleLayer.GENERIC)

@@ -25,7 +25,11 @@ from pyestat.errors import (
     EstatApiError,
     EstatError,
     HttpRetryExhaustedError,
+    RoleResolutionError,
+    RuleAuthoringError,
+    RuleExpansionError,
     TooManyRowsError,
+    UnknownTransformError,
 )
 
 
@@ -40,9 +44,13 @@ __all__ = [
     "MetaInfoResponse",
     "Page",
     "ProgressEvent",
+    "RoleResolutionError",
+    "RuleAuthoringError",
+    "RuleExpansionError",
     "RuleV2",
     "StatsDataResponse",
     "StatsListResponse",
     "TooManyRowsError",
+    "UnknownTransformError",
     "load_builtin_rules",
 ]

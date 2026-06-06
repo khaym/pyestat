@@ -105,18 +105,22 @@ matching.
 
 **Decision: Layered fallback with auto-resolution.**
 
+The `rule=` parameter takes four forms:
+
 - `rule=None` — raw mode. Rows are returned as `axis_id`-keyed dicts
   with original codes; no normalization. Always works.
-- `rule="auto"` (default) — walks the resolution chain
-  (user > project > builtin, Decision E); applies the first matching
-  rule, or falls back to `"heuristic"` when nothing matched.
+- `rule="auto"` (default) — classifies the table's axes, then walks
+  Layers C > B > A > D: a matching v2 rule (user > project > builtin,
+  Decision E), else a generic rule derived from the classified roles
+  (Layer A), else the Layer D heuristic when the table cannot be
+  structured (a low-confidence axis, or a shape needing a pivot).
 - `rule="heuristic"` — label substitution only. Each axis with a
   `CLASS` lookup gets an additive `{axis_id}_label` field alongside
   the raw code; axis-ID keys are preserved so downstream filters that
   work on raw codes keep working. No standard-code mapping and no
   aggregate exclusion.
-- Explicit `rule=Rule(...)` — full transformation per the supplied
-  rule, bypassing the resolution chain.
+- `rule=RuleV2(...)` — a single explicit rule applied directly,
+  bypassing the resolution chain.
 
 This avoids forcing rule authoring upfront while preserving the
 value of rules when they are present. The default `"auto"` makes
@@ -134,6 +138,36 @@ that draft: the original wording said "labeled keys instead of
 axis IDs", but the implementation keeps both because dropping
 axis-ID keys would silently break any downstream filter written
 against the raw codes.
+
+**Surfacing vs. degrading a failed rule (2026-06-06).** Resolving a rule
+does not guarantee it applies: its role may be absent from the table, a
+short-form column may not expand, or a column may name an unknown
+transform. The split is one of *agency* — `"auto"` surfaces a failure the
+caller can fix and degrades one they cannot:
+
+| Failing rule's origin | On failure |
+|---|---|
+| An explicit `rule=RuleV2(...)`, or a matching user / project rule (Layer C) | Surface as a typed `EstatError` |
+| A built-in rule (Layer B) | Degrade to the lossless Layer D |
+
+Surfacing lets the caller correct their own rule and re-run; a
+wrong-looking result they could not trace to their rule would be worse.
+Degrading avoids raising an error they have no power to resolve — they
+cannot edit a built-in. The two non-failure cases route by the same logic:
+a generic Layer A rule uses only total role-default transforms, so it
+cannot fail at apply time, and a classification too weak to trust produces
+no rule at all — both go straight to Layer D.
+
+An unknown transform name surfaces as `UnknownTransformError` (a typed
+`EstatError`), never a bare `KeyError`, and follows the same split. So does
+a same-layer *conflict* — two rules claiming one role pattern: a user /
+project conflict surfaces as `AmbiguousRuleError`, while a built-in conflict
+is skipped (falling through to a generic rule or Layer D), being a packaging
+bug the caller cannot fix and one meant to be caught in CI. A registered
+transform that *itself* raises at runtime is a library bug, not an authoring
+error, and surfaces regardless of origin; the callable escape hatch
+(Decision C), when added, will route its runtime exceptions by this same
+rule.
 
 ### C. Rule Description Format
 

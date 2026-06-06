@@ -13,10 +13,16 @@ from typing import Any, Literal
 
 from pyestat._endpoint import ClassObj
 from pyestat._engine.classifier import AxisRole, TableClassification, _norm, classify
+from pyestat._engine.registry import RegistryKeyError
+from pyestat._engine.resolver import ResolvedRule
 from pyestat._engine.role_defaults import TRANSFORMS, expand_short_form
 from pyestat._engine.rule import OutputColumn, RuleV2
 from pyestat._engine.time import best_effort
-from pyestat.errors import RoleResolutionError, RuleExpansionError
+from pyestat.errors import (
+    RoleResolutionError,
+    RuleAuthoringError,
+    UnknownTransformError,
+)
 
 # A ``where`` selector and a meta-axis member name must compare equal despite
 # full/half-width drift; the pivot reuses the classifier's ``_norm`` (NFKC) so
@@ -66,24 +72,37 @@ def apply_auto(
     values: tuple[dict[str, Any], ...],
     class_objs: Sequence[ClassObj],
     classification: TableClassification,
-    resolved: "RuleV2 | None",
+    resolved: "ResolvedRule | None",
 ) -> tuple[dict[str, Any], ...]:
-    """Apply the ``rule="auto"`` decision, demoting v2 resolution failures
-    to Layer D so the auto path never surfaces them.
+    """Apply the ``rule="auto"`` decision, surfacing or degrading an
+    application failure by the resolved rule's provenance.
 
-    ``resolved`` is the resolver's output: a :class:`RuleV2` (Layer C / B /
-    A) or ``None`` (route to Layer D). A resolved rule that cannot bind to
-    this table — :class:`RoleResolutionError` (a role missing or ambiguous)
-    or :class:`RuleExpansionError` (a short-form column that cannot expand)
-    — falls back to Layer D rather than erroring, per the errors module
-    contract. Other exceptions (e.g. a user transform raising) are *not*
-    swallowed: role-defaults are total, so such a failure is a real bug.
+    ``resolved`` is the resolver's output: a :class:`ResolvedRule` (the rule
+    paired with the layer it came from) or ``None`` (route to Layer D). When
+    applying the rule fails with a :class:`RuleAuthoringError` (a role
+    missing or ambiguous, a short-form column that cannot expand, or a
+    transform name the registry lacks), the layer decides what happens: a
+    caller-authored rule (user / project) surfaces the error so the caller
+    can fix it; a library-provided rule (builtin / generic) degrades to
+    Layer D, since the caller cannot fix it and preserved data beats a
+    crash. Catching the shared base means a future authoring-error leaf is
+    routed by the same policy without editing this clause. See
+    ``docs/DESIGN.md`` Decision B.
+
+    Other exceptions are *not* caught: a registered transform raising at
+    runtime is a real bug, not an authoring error, and surfaces regardless
+    of layer (role-defaults are total, so a Layer A generic rule cannot
+    reach here).
     """
     if resolved is None:
         return _apply_layer_d(values, class_objs, classification)
     try:
-        return apply_v2_rule(values, classification, resolved, class_objs=class_objs)
-    except (RoleResolutionError, RuleExpansionError):
+        return apply_v2_rule(
+            values, classification, resolved.rule, class_objs=class_objs
+        )
+    except RuleAuthoringError:
+        if resolved.layer.is_caller_authored:
+            raise
         return _apply_layer_d(values, class_objs, classification)
 
 
@@ -169,10 +188,13 @@ def apply_v2_rule(
     step. A rule with any ``where``-predicate column pivots (N:1, #10);
     otherwise each input row maps to one output row (1:1).
 
-    Raises :class:`RoleResolutionError` — a typed, catchable error — when a
-    column's role is absent or ambiguous, when a pivot lacks the metadata or
-    a single meta-axis it needs, so the auto path can fall back to Layer D
-    rather than surface the failure.
+    Raises a :class:`RuleAuthoringError` when the rule cannot be applied as
+    authored: :class:`RoleResolutionError` when a column's role is absent or
+    ambiguous or a pivot lacks the metadata or single meta-axis it needs,
+    :class:`UnknownTransformError` for an unknown transform name, or
+    :class:`RuleExpansionError` for a short-form column that cannot expand.
+    The auto path routes these by provenance (surface vs. Layer D — see
+    :func:`apply_auto`); the explicit-rule path surfaces them to the caller.
     """
     rule = expand_short_form(rule)
     role_to_axes: dict[AxisRole, list[str]] = defaultdict(list)
@@ -228,7 +250,11 @@ def _apply_pivot(
         if col.source.where is None
     ]
     meta_plan = [
-        (col.column, _norm(col.source.where.equals), TRANSFORMS.resolve(col.transform))
+        (
+            col.column,
+            _norm(col.source.where.equals),
+            _resolve_transform(col.column, col.transform),
+        )
         for col in rule.output
         if col.source.where is not None
     ]
@@ -254,6 +280,25 @@ def _apply_pivot(
     return tuple(out)
 
 
+def _resolve_transform(column: str, name: str) -> Callable[[Any], Any]:
+    """Resolve a transform name, converting the registry's ``KeyError`` into
+    a typed :class:`UnknownTransformError` that names the column.
+
+    The registry raises a ``KeyError`` subclass; left bare it would escape
+    the auto path's typed-error handling and crash the caller. Wrapping it
+    here — the one place a rule's transform name meets the registry — keeps
+    the contract that an unknown transform is a typed, provenance-routed
+    authoring error (see ``docs/DESIGN.md`` Decision B), not a stray
+    ``KeyError``.
+    """
+    try:
+        return TRANSFORMS.resolve(name)
+    except RegistryKeyError as exc:
+        raise UnknownTransformError(
+            column=column, transform=name, known=TRANSFORMS.names()
+        ) from exc
+
+
 def _resolve_source(
     col: OutputColumn, role_to_axes: dict[AxisRole, list[str]]
 ) -> Callable[[dict[str, Any]], Any]:
@@ -274,7 +319,7 @@ def _resolve_source(
             role=role.value,
             reason="a meta-axis output column needs a `where` predicate to select a member (#10)",
         )
-    transform = TRANSFORMS.resolve(col.transform)
+    transform = _resolve_transform(col.column, col.transform)
     if role == AxisRole.VALUE:
         key = "value"
     else:
