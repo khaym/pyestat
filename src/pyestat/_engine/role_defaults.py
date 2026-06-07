@@ -29,7 +29,13 @@ from typing import Any, Callable
 from pyestat._engine.classifier import AxisRole, TableClassification
 from pyestat._engine.registry import Registry
 from pyestat._engine.rule import MatchV2, OutputColumn, RoleSource, RuleV2
-from pyestat._engine.time import best_effort, monthly_e_stat, quarterly_e_stat, yearly
+from pyestat._engine.time import (
+    TimePoint,
+    best_effort,
+    monthly_e_stat,
+    quarterly_e_stat,
+    yearly,
+)
 from pyestat.errors import RuleExpansionError
 
 
@@ -75,6 +81,22 @@ TRANSFORMS.register("monthly_e_stat", _normalizing(monthly_e_stat))
 TRANSFORMS.register("quarterly_e_stat", _normalizing(quarterly_e_stat))
 TRANSFORMS.register("yearly", _normalizing(yearly))
 TRANSFORMS.register("best_effort_time", _best_effort_time)
+
+
+# Time-format transforms that yield a full ``TimePoint`` (normalized value +
+# granularity), keyed by the same names the scalar ``TRANSFORMS`` registry
+# uses. The canonical time cell (#35) is built from these so a column's
+# *declared* format drives both fields. ``best_effort_time`` is the total
+# role-default — it returns ``None`` for an unrecognised code and never raises;
+# the strict parsers raise ``ValueError`` on a code whose shape does not match,
+# which the apply path turns into a typed ``TimeFormatError`` routed by
+# provenance (a caller's rule surfaces, a built-in degrades — Decision B).
+TIME_PARSERS: dict[str, Callable[[str], "TimePoint | None"]] = {
+    "best_effort_time": best_effort,
+    "yearly": yearly,
+    "monthly_e_stat": monthly_e_stat,
+    "quarterly_e_stat": quarterly_e_stat,
+}
 
 
 # Per-role default transform. Only ``time`` needs a non-trivial default

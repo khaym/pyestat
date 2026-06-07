@@ -35,6 +35,7 @@ from pyestat.errors import (
     RoleResolutionError,
     RuleAuthoringError,
     RuleExpansionError,
+    TimeFormatError,
     UnknownTransformError,
 )
 
@@ -76,10 +77,12 @@ def _rule(output: list[dict]) -> RuleV2:
 
 
 class TestApplyV2LongForm:
-    def test_emits_declared_columns_with_transforms_applied(self) -> None:
-        # The core Done: long-form column declarations drive the output.
-        # time is normalized by its transform, area passes through, and
-        # the value role reads the cell, not an axis code.
+    def test_emits_declared_columns_as_canonical_cells(self) -> None:
+        # The core Done (#35): long-form columns drive the output, each as a
+        # canonical cell. time is a full time object (normalized structurally),
+        # area is a {code,label} dimension (label == code with no metadata
+        # here), and the value role is a {value,unit} measure reading the
+        # observation cell — not an axis code.
         rule = _rule([
             {"column": "time", "source": {"role": "time"}, "transform": "yearly"},
             {"column": "area", "source": {"role": "area"}, "transform": "passthrough"},
@@ -87,8 +90,18 @@ class TestApplyV2LongForm:
         ])
         out = apply_v2_rule(_ROWS, _CLASSIFICATION, rule)
         assert out == (
-            {"time": "2020", "area": "13000", "value": "123"},
-            {"time": "2021", "area": "27000", "value": "456"},
+            {
+                "time": {"code": "2020000000", "label": "2020000000",
+                         "normalized": "2020", "granularity": "yearly"},
+                "area": {"code": "13000", "label": "13000"},
+                "value": {"value": "123", "unit": None},
+            },
+            {
+                "time": {"code": "2021000000", "label": "2021000000",
+                         "normalized": "2021", "granularity": "yearly"},
+                "area": {"code": "27000", "label": "27000"},
+                "value": {"value": "456", "unit": None},
+            },
         )
 
     def test_value_role_reads_the_cell_not_the_tab_axis_code(self) -> None:
@@ -98,7 +111,7 @@ class TestApplyV2LongForm:
         # not the tab code "020".
         rule = _rule([{"column": "v", "source": {"role": "value"}, "transform": "passthrough"}])
         out = apply_v2_rule(_ROWS, _CLASSIFICATION, rule)
-        assert out[0] == {"v": "123"}
+        assert out[0] == {"v": {"value": "123", "unit": None}}
 
 
 class TestApplyV2ShortForm:
@@ -108,7 +121,12 @@ class TestApplyV2ShortForm:
         # load step.
         rule = _rule([{"column": "time"}, {"column": "area"}, {"column": "value"}])
         out = apply_v2_rule(_ROWS, _CLASSIFICATION, rule)
-        assert out[0] == {"time": "2020", "area": "13000", "value": "123"}
+        assert out[0] == {
+            "time": {"code": "2020000000", "label": "2020000000",
+                     "normalized": "2020", "granularity": "yearly"},
+            "area": {"code": "13000", "label": "13000"},
+            "value": {"value": "123", "unit": None},
+        }
 
 
 class TestApplyV2RoleResolution:
@@ -184,6 +202,51 @@ class TestUnknownTransform:
             )
 
 
+class TestTimeFormat:
+    """A TIME column's *declared* format drives the time cell (#35). The
+    total ``best_effort_time`` role-default keeps an unrecognised code raw; a
+    declared *strict* format the data violates, or a non-time transform, is a
+    typed :class:`TimeFormatError` — so a declared format is honored, not
+    silently replaced by a best-effort guess. The auto path routes these by
+    provenance (covered in test_endpoint_rules); here the apply layer raises
+    directly."""
+
+    def test_declared_strict_format_drives_the_cell(self) -> None:
+        # quarterly_e_stat on a quarter-shaped code yields the quarterly object
+        # — the declared format, not best_effort, governs normalized/granularity.
+        rows = ({"time": "2020000103", "area": "13000", "tab": "020", "value": "1"},)
+        rule = _rule([
+            {"column": "time", "source": {"role": "time"}, "transform": "quarterly_e_stat"},
+        ])
+        out = apply_v2_rule(rows, _CLASSIFICATION, rule)
+        assert out[0]["time"] == {
+            "code": "2020000103", "label": "2020000103",
+            "normalized": "2020-Q1", "granularity": "quarterly",
+        }
+
+    def test_strict_format_mismatching_the_code_raises_typed_error(self) -> None:
+        # The author declared monthly, but _ROWS' codes are yearly-shaped
+        # (2020000000). Rather than silently best-efforting to a yearly result,
+        # the mismatch surfaces as a typed error naming the column and format.
+        rule = _rule([
+            {"column": "time", "source": {"role": "time"}, "transform": "monthly_e_stat"},
+        ])
+        with pytest.raises(TimeFormatError, match="time") as exc:
+            apply_v2_rule(_ROWS, _CLASSIFICATION, rule)
+        assert exc.value.column == "time"
+        assert exc.value.transform == "monthly_e_stat"
+
+    def test_non_time_transform_on_a_time_column_raises_typed_error(self) -> None:
+        # passthrough is a valid transform but not a time format; a time column
+        # must declare a time parser, so this is an authoring error (not a
+        # silent passthrough of the raw code).
+        rule = _rule([
+            {"column": "time", "source": {"role": "time"}, "transform": "passthrough"},
+        ])
+        with pytest.raises(TimeFormatError, match="not a time format"):
+            apply_v2_rule(_ROWS, _CLASSIFICATION, rule)
+
+
 class TestRuleAuthoringErrorHierarchy:
     def test_apply_time_authoring_errors_share_one_base(self) -> None:
         # apply_auto catches RuleAuthoringError, so the surface/degrade policy
@@ -193,6 +256,7 @@ class TestRuleAuthoringErrorHierarchy:
         assert issubclass(RoleResolutionError, RuleAuthoringError)
         assert issubclass(RuleExpansionError, RuleAuthoringError)
         assert issubclass(UnknownTransformError, RuleAuthoringError)
+        assert issubclass(TimeFormatError, RuleAuthoringError)
 
 
 class TestLayerAGenericRuleNeverRaises:
@@ -204,7 +268,14 @@ class TestLayerAGenericRuleNeverRaises:
         rule = _rule([{"column": "time"}, {"column": "area"}, {"column": "value"}])
         adversarial = ({"time": "garbage", "area": "??", "tab": "020", "value": "-"},)
         out = apply_v2_rule(adversarial, _CLASSIFICATION, rule)
-        assert out == ({"time": "garbage", "area": "??", "value": "-"},)
+        # An unrecognised time code keeps normalized == code (granularity
+        # None); area passes through; the value cell is preserved raw.
+        assert out == ({
+            "time": {"code": "garbage", "label": "garbage",
+                     "normalized": "garbage", "granularity": None},
+            "area": {"code": "??", "label": "??"},
+            "value": {"value": "-", "unit": None},
+        },)
 
 
 # A trade-like meta-axis table (#17 pattern 2): cat02 splits one logical
@@ -255,16 +326,22 @@ class TestApplyV2Pivot:
 
     def test_collapses_spread_rows_into_one_record_per_group(self) -> None:
         # The core Done: the three cat02 rows of group A become one row.
-        # Non-meta columns (cat01/area/time) read the group's shared codes
-        # (time normalized by its transform); each meta column selects its
-        # member by *name* and surfaces that member's cell.
+        # Non-meta columns (cat01/area/time) read the group's shared codes as
+        # canonical cells (time normalized structurally); each meta column
+        # selects its member by *name* and surfaces that member's cell as a
+        # {value,unit} measure (no unit on these rows → unit None).
         out = apply_v2_rule(
             _PIVOT_ROWS, _PIVOT_CLASSIFICATION, _pivot_rule(_TRADE_OUTPUT),
             class_objs=_PIVOT_CLASS_OBJS,
         )
         assert out[0] == {
-            "cat01": "0101", "area": "50103", "time": "2005",
-            "unit": "ＮＯ", "quantity": "16", "amount_jpy": "35220",
+            "cat01": {"code": "0101", "label": "0101"},
+            "area": {"code": "50103", "label": "50103"},
+            "time": {"code": "2005000000", "label": "2005000000",
+                     "normalized": "2005", "granularity": "yearly"},
+            "unit": {"value": "ＮＯ", "unit": None},
+            "quantity": {"value": "16", "unit": None},
+            "amount_jpy": {"value": "35220", "unit": None},
         }
 
     def test_one_output_row_per_logical_record(self) -> None:
@@ -285,8 +362,13 @@ class TestApplyV2Pivot:
             class_objs=_PIVOT_CLASS_OBJS,
         )
         assert out[1] == {
-            "cat01": "0101", "area": "50104", "time": "2005",
-            "unit": None, "quantity": "7", "amount_jpy": "99",
+            "cat01": {"code": "0101", "label": "0101"},
+            "area": {"code": "50104", "label": "50104"},
+            "time": {"code": "2005000000", "label": "2005000000",
+                     "normalized": "2005", "granularity": "yearly"},
+            "unit": None,
+            "quantity": {"value": "7", "unit": None},
+            "amount_jpy": {"value": "99", "unit": None},
         }
 
     def test_selects_member_by_nfkc_normalized_name(self) -> None:
@@ -302,7 +384,7 @@ class TestApplyV2Pivot:
             {"column": "amount", "source": {"role": "meta-axis", "where": {"equals": "合計_金額3"}}},  # half-width 3
         ])
         out = apply_v2_rule(rows, _PIVOT_CLASSIFICATION, rule, class_objs=class_objs)
-        assert out[0]["amount"] == "35220"
+        assert out[0]["amount"]["value"] == "35220"
 
     def test_meta_axis_source_without_where_fails_identifiably(self) -> None:
         # A meta-axis column with no where predicate cannot bind to a single
@@ -360,7 +442,7 @@ class TestApplyV2Pivot:
             {"column": "amount", "source": {"role": "meta-axis", "where": {"equals": "合計_金額"}}},
         ])
         out = apply_v2_rule(rows, _PIVOT_CLASSIFICATION, rule, class_objs=class_objs)
-        assert {row["amount"] for row in out} == {"100", "200"}
+        assert {row["amount"]["value"] for row in out} == {"100", "200"}
 
     def test_transform_runs_on_the_selected_meta_cell(self) -> None:
         # A non-passthrough transform on a `where` column must be applied to
@@ -376,4 +458,25 @@ class TestApplyV2Pivot:
             {"column": "obs_year", "source": {"role": "meta-axis", "where": {"equals": "観測年"}}, "transform": "yearly"},
         ])
         out = apply_v2_rule(rows, _PIVOT_CLASSIFICATION, rule, class_objs=class_objs)
-        assert out[0]["obs_year"] == "2020"
+        assert out[0]["obs_year"]["value"] == "2020"
+
+    def test_pivot_measures_keep_their_own_units(self) -> None:
+        # Trade's defining case (#35 decision 2): quantity is counted in ＮＯ,
+        # amount in 千円. Each pivoted measure column carries *its member's
+        # own* unit — a single shared unit sibling could not represent two
+        # measures with different units.
+        class_objs = (_classobj("cat02", [("130", "合計_数量2"), ("140", "合計_金額")]),)
+        rows = (
+            {"cat01": "0101", "cat02": "130", "area": "50103",
+             "time": "2005000000", "value": "16", "unit": "ＮＯ"},
+            {"cat01": "0101", "cat02": "140", "area": "50103",
+             "time": "2005000000", "value": "35220", "unit": "千円"},
+        )
+        rule = _pivot_rule([
+            {"column": "time", "source": {"role": "time"}, "transform": "yearly"},
+            {"column": "quantity", "source": {"role": "meta-axis", "where": {"equals": "合計_数量2"}}},
+            {"column": "amount", "source": {"role": "meta-axis", "where": {"equals": "合計_金額"}}},
+        ])
+        out = apply_v2_rule(rows, _PIVOT_CLASSIFICATION, rule, class_objs=class_objs)
+        assert out[0]["quantity"] == {"value": "16", "unit": "ＮＯ"}
+        assert out[0]["amount"] == {"value": "35220", "unit": "千円"}

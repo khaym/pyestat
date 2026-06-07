@@ -68,12 +68,13 @@ class TestBundledRulesAgainstLiveTables:
         # with a marker value) doesn't fail the assertion.
         sample = resp.values[:5]
         for row in sample:
-            assert row.get("time_granularity") == "monthly"
+            time = row["time"]  # canonical time cell (#35)
+            assert time["granularity"] == "monthly"
             # YYYY-MM
-            assert isinstance(row.get("time"), str)
-            assert len(row["time"]) == 7 and row["time"][4] == "-"
+            assert isinstance(time["normalized"], str)
+            assert len(time["normalized"]) == 7 and time["normalized"][4] == "-"
             # raw code preserved
-            assert "time_code" in row
+            assert "code" in time
 
     def test_gdp_normalizes_quarterly_time(self, client: EstatClient) -> None:
         # 2,816 rows in production.
@@ -81,9 +82,10 @@ class TestBundledRulesAgainstLiveTables:
         assert len(resp.values) > 0
         sample = resp.values[:5]
         for row in sample:
-            assert row.get("time_granularity") == "quarterly"
+            time = row["time"]  # canonical time cell (#35)
+            assert time["granularity"] == "quarterly"
             # YYYY-Qn
-            assert "-Q" in row["time"]
+            assert "-Q" in time["normalized"]
 
 
 class TestMaxRowsGuardAgainstHugeTable:

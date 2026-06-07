@@ -11,8 +11,8 @@ transport- and query-level distinctions callers act on:
 
 A second group, :class:`RuleAuthoringError` and its leaves
 (:class:`RoleResolutionError`, :class:`RuleExpansionError`,
-:class:`UnknownTransformError`), reports a rule that cannot be applied as
-authored. On the ``rule="auto"`` path, whether such a failure surfaces or
+:class:`UnknownTransformError`, :class:`TimeFormatError`), reports a rule
+that cannot be applied as authored. On the ``rule="auto"`` path, whether such a failure surfaces or
 quietly degrades to the lossless Layer D fallback turns on *who authored
 the failing rule*: a rule the caller passed or wrote (an explicit
 ``rule=``, or a user / project rule) surfaces so they can fix it; a
@@ -104,8 +104,9 @@ class RuleAuthoringError(EstatError):
     """A rule cannot be applied as authored.
 
     The shared base of the ways a single rule fails at apply time —
-    :class:`RoleResolutionError`, :class:`RuleExpansionError`, and
-    :class:`UnknownTransformError`. Grouping them lets the ``rule="auto"``
+    :class:`RoleResolutionError`, :class:`RuleExpansionError`,
+    :class:`UnknownTransformError`, and :class:`TimeFormatError`. Grouping
+    them lets the ``rule="auto"``
     path catch the whole category in one place and route it by provenance
     (a caller-authored rule surfaces, a library-provided one degrades to
     Layer D — see ``docs/DESIGN.md`` Decision B), and lets a caller catch
@@ -168,6 +169,34 @@ class UnknownTransformError(RuleAuthoringError):
         self.column = column
         self.transform = transform
         self.known = known
+
+
+class TimeFormatError(RuleAuthoringError):
+    """A time column cannot produce a normalized time point as authored.
+
+    Two cases, both authoring decisions: the column names a transform that is
+    not a time format (a time column must declare ``best_effort_time`` or a
+    specific parser like ``yearly``), or a *strict* declared format rejects an
+    actual code because the table's time shape does not match the format the
+    rule chose. The role-default ``best_effort_time`` is total and never lands
+    here; only an explicitly chosen strict format can. As a
+    :class:`RuleAuthoringError` the auto path routes it by provenance — a
+    caller-authored rule surfaces so they can pick the right format, a
+    built-in degrades to Layer D (``docs/DESIGN.md`` Decision B) — so a
+    declared format is honored rather than silently replaced by a guess.
+    """
+
+    def __init__(
+        self, *, column: str, transform: object, reason: str, code: object = None
+    ) -> None:
+        detail = f" (code {code!r})" if code is not None else ""
+        super().__init__(
+            f"time column {column!r} cannot apply format {transform!r}{detail}: {reason}"
+        )
+        self.column = column
+        self.transform = transform
+        self.reason = reason
+        self.code = code
 
 
 class TooManyRowsError(EstatError):

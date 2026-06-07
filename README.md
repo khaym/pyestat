@@ -41,14 +41,36 @@ except EstatApiError as exc:
     # e-Stat reports logical errors with HTTP 200 + STATUS != 0.
     print(f"e-Stat refused the query: {exc.status} {exc.message}")
 else:
-    print(response.status)          # 0 on success
     print(response.stats_data_id)   # "0003448237"
     for row in response.values:
-        # @-prefixed dimensions become regular keys; "$" becomes "value".
+        # The default rule="auto" returns self-describing *nested* cells:
+        # each axis is {code, label}, time adds normalized/granularity,
+        # the observation is {value, unit}.
         print(row)
-        # -> {"tab": "020", "cat01": "000", "time": "2020000000",
-        #     "unit": "千人", "value": "126146"}
+        # -> {"cat01": {"code": "000", "label": "男女計"},
+        #     "time":  {"code": "2020000000", "label": "2020年",
+        #               "normalized": "2020", "granularity": "yearly"},
+        #     "value": {"value": "126146", "unit": "千人"}}
 ```
+
+Prefer one column per field (e.g. for pandas)? `to_flat()` projects the
+nested cells to the familiar suffix shape — losslessly, and as a no-op on a
+raw (`rule=None`) response:
+
+```python
+flat = response.to_flat()
+# -> [{"cat01": "000", "cat01_label": "男女計",
+#      "time": "2020", "time_code": "2020000000",
+#      "time_label": "2020年", "time_granularity": "yearly",
+#      "value": "126146", "unit": "千人"}, ...]
+
+import pandas as pd
+df = pd.DataFrame(flat)
+```
+
+Pass `rule=None` instead to get e-Stat's raw rows unchanged (`@`-prefixed
+dimensions become plain keys, `"$"` becomes `"value"`) — flat scalars, no
+labels or normalization.
 
 ## Supplying your own rules
 

@@ -135,7 +135,13 @@ class TestBuildGenericRule:
         rule = build_generic_rule(clf)
         assert rule is not None
         rows = ({"time": "2020000000", "tab": "020", "value": "126146"},)
-        assert apply_v2_rule(rows, clf, rule) == ({"time": "2020", "value": "126146"},)
+        # The built rule applies directly, emitting canonical cells (#35):
+        # a time object and a {value,unit} measure (no unit on this row).
+        assert apply_v2_rule(rows, clf, rule) == ({
+            "time": {"code": "2020000000", "label": "2020000000",
+                     "normalized": "2020", "granularity": "yearly"},
+            "value": {"value": "126146", "unit": None},
+        },)
 
     def test_meta_axis_declines(self) -> None:
         clf = TableClassification((

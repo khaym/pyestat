@@ -28,6 +28,7 @@ from pyestat.errors import (
     RoleResolutionError,
     RuleAuthoringError,
     RuleExpansionError,
+    TimeFormatError,
     TooManyRowsError,
     UnknownTransformError,
 )
@@ -50,6 +51,7 @@ __all__ = [
     "RuleV2",
     "StatsDataResponse",
     "StatsListResponse",
+    "TimeFormatError",
     "TooManyRowsError",
     "UnknownTransformError",
     "load_builtin_rules",

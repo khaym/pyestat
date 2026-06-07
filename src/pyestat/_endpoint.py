@@ -59,13 +59,39 @@ class Page:
 
 @dataclass(frozen=True)
 class StatsDataResponse:
-    """Aggregated result of :meth:`EstatClient.get_stats_data`."""
+    """Aggregated result of :meth:`EstatClient.get_stats_data`.
+
+    ``values`` is the canonical *nested* form (#35): each field is a
+    self-describing object — a ``{code, label}`` dimension, a time cell
+    (``{code, label, normalized, granularity}``), or a ``{value, unit}``
+    measure — so an agent reads ``row["cat01"]["label"]`` without a suffix
+    convention. :meth:`to_flat` projects to one column per field for callers
+    who prefer the flat shape. A raw (``rule=None``) response keeps Layer 2's
+    flat rows; :meth:`to_flat` leaves them unchanged.
+    """
 
     stats_data_id: str
     total_number: int | None
     table_inf: dict[str, Any]
     class_objs: tuple[ClassObj, ...]
     values: tuple[dict[str, Any], ...]
+
+    def to_flat(self) -> tuple[dict[str, Any], ...]:
+        """Project the nested ``values`` to the flat suffix convention.
+
+        A ``{code, label}`` dimension flattens to ``K`` / ``K_label``; a time
+        cell to ``K`` (normalized) / ``K_code`` / ``K_label`` /
+        ``K_granularity``; a ``{value, unit}`` measure to ``K`` plus its unit
+        (the lone observation column's unit takes the bare ``unit`` key, a
+        pivot measure's a per-column ``K_unit``). Lossless and idempotent — an
+        already-flat (``rule=None``) row passes through untouched. For a
+        DataFrame: ``pandas.DataFrame(resp.to_flat())``.
+        """
+        # Lazy import keeps the L2 → L3 dependency out of module-load time
+        # (the rule subsystem imports this module, not the other way around).
+        from pyestat._engine.canonical import to_flat_rows
+
+        return to_flat_rows(self.values)
 
 
 @dataclass(frozen=True)
@@ -206,7 +232,11 @@ class EstatClient:
     ) -> StatsDataResponse:
         """Fetch one table, walking ``NEXT_KEY`` until all rows are pulled.
 
-        ``rule`` selects the transformation mode:
+        Every transformed mode returns the canonical *nested* row shape (#35):
+        each axis is a ``{code, label}`` cell (``time`` adds ``normalized`` /
+        ``granularity``) and the observation is a ``{value, unit}`` measure.
+        Call :meth:`StatsDataResponse.to_flat` for the one-column-per-field
+        flat shape (pandas). ``rule`` selects the transformation mode:
 
         * ``"auto"`` (default) — classify the table's axes, then resolve a
           rule through Layers C > B > A > D: a matching v2 rule
@@ -219,14 +249,15 @@ class EstatClient:
           that fails degrades to Layer D instead (``docs/DESIGN.md``
           Decision B).
         * ``"heuristic"`` — Layer D fallback. The axis classifier detects
-          the ``time`` axis and normalizes it best-effort; every axis gets
-          a ``{axis_id}_label`` field. Raw codes are preserved, the cell
-          value is never coerced, and an unrecognized code is left as-is —
-          data is preserved, axes are not normalized (standard-code
-          mapping is out of scope here). Useful when you want predictable,
-          lossless output regardless of which built-in rules ship.
+          the ``time`` axis and normalizes it best-effort; every axis becomes
+          a ``{code, label}`` cell. Raw codes are preserved (in each cell's
+          ``code``), the cell value is never coerced, and an unrecognized time
+          code keeps ``normalized == code`` — data is preserved, axes are not
+          normalized to standard codes (that is out of scope here). Useful
+          when you want predictable, lossless output regardless of which
+          built-in rules ship.
         * ``None`` — raw mode. Returns Layer 2's untransformed flattened
-          rows verbatim.
+          rows verbatim (flat scalars, not nested cells).
         * :class:`RuleV2` — apply this rule directly against the table's
           classification, bypassing the resolution chain.
 

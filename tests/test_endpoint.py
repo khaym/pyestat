@@ -151,7 +151,9 @@ class TestParseStatsData:
             }
         }
         client, _ = _make_client(payload)
-        resp = client.get_stats_data("T")
+        # rule=None isolates the Layer 2 single-dict→tuple normalization from
+        # any Layer 3 transformation (which would wrap the cell).
+        resp = client.get_stats_data("T", rule=None)
         assert resp.values == ({"tab": "A", "value": "42"},)
 
     def test_normalizes_single_class_obj_dict(self) -> None:

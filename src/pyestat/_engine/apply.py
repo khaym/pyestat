@@ -12,15 +12,16 @@ from collections.abc import Callable, Sequence
 from typing import Any, Literal
 
 from pyestat._endpoint import ClassObj
+from pyestat._engine.canonical import dimension, measure, time_cell
 from pyestat._engine.classifier import AxisRole, TableClassification, _norm, classify
 from pyestat._engine.registry import RegistryKeyError
 from pyestat._engine.resolver import ResolvedRule
-from pyestat._engine.role_defaults import TRANSFORMS, expand_short_form
+from pyestat._engine.role_defaults import TIME_PARSERS, TRANSFORMS, expand_short_form
 from pyestat._engine.rule import OutputColumn, RuleV2
-from pyestat._engine.time import best_effort
 from pyestat.errors import (
     RoleResolutionError,
     RuleAuthoringError,
+    TimeFormatError,
     UnknownTransformError,
 )
 
@@ -115,49 +116,72 @@ def _apply_layer_d(
     structural.
 
     The axis ``classification`` (computed once on the request path, #28, not
-    a hand-written rule) decides which axis is ``time``; that axis gets a
-    best-effort normalization. Every axis with a CLASS table gains an
-    additive ``{axis_id}_label``. Raw codes stay in place, the cell value is
-    never coerced, and a code no parser recognises is left untouched —
-    Layer D never raises and never drops a row. ``area`` is passed through;
+    a hand-written rule) decides which axis is ``time``. Output is the
+    canonical nested form (#35): every classified axis becomes a
+    ``{code, label}`` cell — the ``time`` axis a full :func:`time_cell` — and
+    the observation becomes a ``{value, unit}`` measure. Raw codes stay in
+    each cell's ``code``, the value is never coerced, and a code no parser
+    recognises keeps ``normalized == code`` — Layer D never raises and never
+    drops a row. ``area`` is passed through as a plain dimension;
     standard-code mapping is task #4's job.
     """
-    time_axes = tuple(
+    time_axes = frozenset(
         a.axis_id for a in classification.axes if a.role == AxisRole.TIME
     )
-    lookup: dict[str, dict[str, str]] = {
+    lookup = _label_lookup(class_objs)
+    return tuple(_layer_d_row(row, time_axes, lookup) for row in values)
+
+
+def _label_lookup(
+    class_objs: Sequence[ClassObj] | None,
+) -> dict[str, dict[str, str]]:
+    """Per axis id, a ``code -> display name`` map for building ``label``s.
+
+    Shared by Layer D and the v2 1:1/pivot paths so both resolve a code's
+    human label the same way. A label-less axis (no ``CLASS`` entries) maps
+    to an empty dict, and callers fall back to the code itself — the canonical
+    ``{code, label}`` cell is then ``label == code`` rather than partial.
+    """
+    if class_objs is None:
+        return {}
+    return {
         obj.id: {c["code"]: c.get("name", c["code"]) for c in obj.classes if "code" in c}
         for obj in class_objs
     }
-    return tuple(_layer_d_row(row, time_axes, lookup) for row in values)
 
 
 def _layer_d_row(
     row: dict[str, Any],
-    time_axes: Sequence[str],
+    time_axes: frozenset[str],
     lookup: dict[str, dict[str, str]],
 ) -> dict[str, Any]:
-    out = _label_row(row, lookup)
-    for axis_id in time_axes:
-        code = out.get(axis_id)
-        if not isinstance(code, str):
-            continue
-        point = best_effort(code)
-        if point is None:
-            continue
-        out[axis_id] = point.normalized
-        out[f"{axis_id}_code"] = code
-        out["time_granularity"] = point.granularity
+    """Rebuild one row as canonical cells.
+
+    A label-less code carries its own code as the label, so a dimension cell
+    is never partial. ``unit`` is folded into the ``value`` measure rather
+    than left as a sibling key.
+    """
+    out: dict[str, Any] = {}
+    for key, raw in row.items():
+        if key == "unit":
+            continue  # absorbed into the value measure below
+        if key == "value":
+            out["value"] = measure(raw, row.get("unit"))
+        elif key in lookup:
+            label = _label(lookup[key], raw)
+            # Layer D is the no-rule path: time is always best-effort normalized
+            # (time_cell's default), never a declared strict format.
+            out[key] = time_cell(raw, label) if key in time_axes else dimension(raw, label)
+        else:
+            out[key] = raw
     return out
 
 
-def _label_row(row: dict[str, Any], lookup: dict[str, dict[str, str]]) -> dict[str, Any]:
-    out = dict(row)
-    for axis_id, codes_to_names in lookup.items():
-        code = row.get(axis_id)
-        if isinstance(code, str) and code in codes_to_names:
-            out[f"{axis_id}_label"] = codes_to_names[code]
-    return out
+def _label(codes: dict[str, str], code: Any) -> Any:
+    """A code's display label from the class lookup, falling back to the code
+    itself so a ``{code, label}`` cell is never partial — a label-less axis
+    (trade HS codes, where ``code == name``) carries its code as the label."""
+    return codes.get(code, code) if isinstance(code, str) else code
 
 
 # --- v2 application (output-schema-first, #22) ------------------------------
@@ -200,9 +224,10 @@ def apply_v2_rule(
     role_to_axes: dict[AxisRole, list[str]] = defaultdict(list)
     for axis in classification.axes:
         role_to_axes[axis.role].append(axis.axis_id)
+    lookup = _label_lookup(class_objs)
     if any(col.source.where is not None for col in rule.output):
-        return _apply_pivot(values, classification, rule, role_to_axes, class_objs)
-    plan = [(col.column, _resolve_source(col, role_to_axes)) for col in rule.output]
+        return _apply_pivot(values, classification, rule, role_to_axes, class_objs, lookup)
+    plan = [(col.column, _resolve_source(col, role_to_axes, lookup)) for col in rule.output]
     return tuple({column: read(row) for column, read in plan} for row in values)
 
 
@@ -212,15 +237,19 @@ def _apply_pivot(
     rule: RuleV2,
     role_to_axes: dict[AxisRole, list[str]],
     class_objs: Sequence[ClassObj] | None,
+    lookup: dict[str, dict[str, str]],
 ) -> tuple[dict[str, Any], ...]:
     """Fold meta-axis-spread rows into one record per non-meta group (#10).
 
     Groups ``values`` by the codes of every non-meta axis, then for each
-    group emits one row: non-meta columns read the group's shared codes, and
-    each ``where`` column selects the member whose (NFKC-normalized) name
-    matches and surfaces its cell — ``None`` when that member is absent from
-    the group, so a dropped measure (e.g. CPI's retired weight series) leaves
-    a stable column rather than dropping the record.
+    group emits one row: non-meta columns read the group's shared codes as
+    canonical cells (#35), and each ``where`` column selects the member whose
+    (NFKC-normalized) name matches and surfaces its cell as a ``{value, unit}``
+    measure — carrying *that member's own* unit, so two measures with
+    different units (trade's 数量 in ＮＯ vs 金額 in 千円) stay correct. A
+    member absent from the group yields ``None`` (not a measure), so a dropped
+    measure (e.g. CPI's retired weight series) leaves a stable column rather
+    than dropping the record.
     """
     meta_axes = role_to_axes.get(AxisRole.META_AXIS, [])
     if len(meta_axes) != 1:
@@ -245,7 +274,7 @@ def _apply_pivot(
         a.axis_id for a in classification.axes if a.role != AxisRole.META_AXIS
     ]
     nonmeta_plan = [
-        (col.column, _resolve_source(col, role_to_axes))
+        (col.column, _resolve_source(col, role_to_axes, lookup))
         for col in rule.output
         if col.source.where is None
     ]
@@ -268,14 +297,20 @@ def _apply_pivot(
     for rows in groups.values():
         rep = rows[0]
         record = {column: read(rep) for column, read in nonmeta_plan}
-        cell_by_name: dict[str, Any] = {}
+        # Keep each selected member's value *and* its own unit, so a pivoted
+        # measure column carries the right unit (they differ across measures).
+        cell_by_name: dict[str, tuple[Any, Any]] = {}
         for row in rows:
             name = name_by_code.get(row.get(meta_id))
             if name is not None and name not in cell_by_name:
-                cell_by_name[name] = row.get("value")
+                cell_by_name[name] = (row.get("value"), row.get("unit"))
         for column, target, transform in meta_plan:
-            raw = cell_by_name.get(target)
-            record[column] = transform(raw) if raw is not None else None
+            cell = cell_by_name.get(target)
+            if cell is None:
+                record[column] = None
+            else:
+                raw, unit = cell
+                record[column] = measure(_apply_transform(transform, raw), unit)
         out.append(record)
     return tuple(out)
 
@@ -299,15 +334,49 @@ def _resolve_transform(column: str, name: str) -> Callable[[Any], Any]:
         ) from exc
 
 
-def _resolve_source(
-    col: OutputColumn, role_to_axes: dict[AxisRole, list[str]]
-) -> Callable[[dict[str, Any]], Any]:
-    """Bind one output column to a per-row reader, resolved once per call.
+def _validate_transform(column: str, name: str) -> None:
+    """Assert a transform name is known (typo → :class:`UnknownTransformError`,
+    #32) *without* binding the callable — for a column whose canonical cell is
+    built structurally and never runs the scalar transform (a dimension's raw
+    code; a time cell, whose parser comes from :data:`TIME_PARSERS`). Spelling
+    this out as a name-check, not an unused ``_resolve_transform`` binding,
+    keeps it clear the transform is validated but deliberately not applied."""
+    _resolve_transform(column, name)
 
-    The VALUE role is special: its value is the observation cell
-    (``value``), not an axis code — the classifier assigns VALUE to the
-    single-member ``tab`` axis, but the number lives under ``value`` in
-    Layer 2's flattened row.
+
+def _apply_transform(transform: Callable[[Any], Any], raw: Any) -> Any:
+    """Run a measure's transform, passing ``None`` through untouched.
+
+    Shared by the 1:1 VALUE reader and the pivot's ``where`` measures so both
+    agree on what counts as 'no value' — change the missing-cell rule once."""
+    return transform(raw) if raw is not None else raw
+
+
+def _resolve_source(
+    col: OutputColumn,
+    role_to_axes: dict[AxisRole, list[str]],
+    lookup: dict[str, dict[str, str]],
+) -> Callable[[dict[str, Any]], Any]:
+    """Bind one output column to a per-row reader that returns a *canonical
+    cell* (#35), resolved once per call.
+
+    The cell shape follows the column's role:
+
+    * **VALUE** — a ``{value, unit}`` measure. The number is the observation
+      cell (``value``), not an axis code — the classifier assigns VALUE to the
+      single-member ``tab`` axis, but the magnitude lives under ``value`` in
+      Layer 2's flattened row; its ``unit`` is the sibling cell. The declared
+      transform runs on the magnitude.
+    * **TIME** — a full :func:`time_cell` whose ``normalized`` / ``granularity``
+      are driven by the column's *declared* format (#35). ``best_effort_time``
+      (the role-default) is total — an unrecognised code is kept raw. A
+      declared *strict* format (e.g. ``monthly_e_stat``) that the data's shape
+      violates raises a typed :class:`TimeFormatError`, routed by provenance
+      (caller's rule surfaces, built-in degrades — Decision B), so a declared
+      format is honored rather than silently replaced by a best-effort guess.
+    * **AREA / CATEGORY** — a ``{code, label}`` dimension. The label comes
+      from the class metadata, falling back to the code. (#4 will add a
+      standard-code field additively; today these are passthrough.)
 
     A bare ``meta-axis`` source (no ``where``) cannot bind to a single
     member, so it raises here; the pivot path handles ``where`` columns
@@ -319,29 +388,98 @@ def _resolve_source(
             role=role.value,
             reason="a meta-axis output column needs a `where` predicate to select a member (#10)",
         )
-    transform = _resolve_transform(col.column, col.transform)
     if role == AxisRole.VALUE:
-        key = "value"
-    else:
-        axes = role_to_axes.get(role, [])
-        if not axes:
-            raise RoleResolutionError(
-                role=role.value,
-                reason=f"no axis is classified as {role.value} in this table",
-            )
-        if len(axes) > 1:
-            raise RoleResolutionError(
-                role=role.value,
-                reason=(
-                    f"multiple axes are classified as {role.value} ({axes}); "
-                    "#10's where predicate disambiguates a meta-axis, not a "
-                    "repeated non-meta role, which is not yet addressable"
-                ),
-            )
-        key = axes[0]
+        transform = _resolve_transform(col.column, col.transform)
+
+        def read(row: dict[str, Any]) -> Any:
+            return measure(_apply_transform(transform, row.get("value")), row.get("unit"))
+
+        return read
+
+    axis_id = _single_axis(role, role_to_axes)
+    codes = lookup.get(axis_id, {})
+    if role == AxisRole.TIME:
+        return _time_reader(col, axis_id, codes)
+
+    # AREA / CATEGORY — passthrough dimension. Validate the transform name so a
+    # typo still surfaces (#32); #4 will give area a standard-code field.
+    _validate_transform(col.column, col.transform)
 
     def read(row: dict[str, Any]) -> Any:
-        raw = row.get(key)
-        return transform(raw) if raw is not None else raw
+        code = row.get(axis_id)
+        return dimension(code, _label(codes, code))
 
     return read
+
+
+def _time_reader(
+    col: OutputColumn, axis_id: str, codes: dict[str, str]
+) -> Callable[[dict[str, Any]], Any]:
+    """Bind a TIME column to a reader that builds a :func:`time_cell` from the
+    column's declared format.
+
+    The declared transform drives the time object. Order matters: the name is
+    validated first (a typo surfaces as :class:`UnknownTransformError`, #32),
+    then mapped to a :class:`TimePoint`-returning parser. A name that is a
+    valid transform but not a time format is a :class:`TimeFormatError`.
+    ``best_effort_time`` is total; a strict parser raising ``ValueError`` on a
+    shape mismatch becomes a :class:`TimeFormatError` — both routed by
+    provenance on the auto path (Decision B).
+    """
+    _validate_transform(col.column, col.transform)  # typo → UnknownTransformError, first
+    parser = TIME_PARSERS.get(col.transform)
+    if parser is None:
+        raise TimeFormatError(
+            column=col.column,
+            transform=col.transform,
+            reason=(
+                "not a time format; a time column must declare best_effort_time "
+                f"or a specific parser ({sorted(TIME_PARSERS)})"
+            ),
+        )
+
+    def read(row: dict[str, Any]) -> Any:
+        code = row.get(axis_id)
+        label = _label(codes, code)
+        if not isinstance(code, str):
+            return time_cell(code, label, None)
+        try:
+            point = parser(code)
+        except ValueError as exc:
+            raise TimeFormatError(
+                column=col.column,
+                transform=col.transform,
+                code=code,
+                reason="code does not match the declared time format",
+            ) from exc
+        return time_cell(code, label, point)
+
+    return read
+
+
+def _single_axis(
+    role: AxisRole, role_to_axes: dict[AxisRole, list[str]]
+) -> str:
+    """The one axis playing ``role``, or a typed error if absent / repeated.
+
+    A non-meta role must resolve to exactly one axis. Zero axes (a rule
+    asking for a role the table lacks) and several axes (a repeated non-meta
+    role, which only #10's ``where`` could disambiguate) both fail as typed
+    :class:`RoleResolutionError`\\ s so the auto path can route to Layer D.
+    """
+    axes = role_to_axes.get(role, [])
+    if not axes:
+        raise RoleResolutionError(
+            role=role.value,
+            reason=f"no axis is classified as {role.value} in this table",
+        )
+    if len(axes) > 1:
+        raise RoleResolutionError(
+            role=role.value,
+            reason=(
+                f"multiple axes are classified as {role.value} ({axes}); "
+                "#10's where predicate disambiguates a meta-axis, not a "
+                "repeated non-meta role, which is not yet addressable"
+            ),
+        )
+    return axes[0]

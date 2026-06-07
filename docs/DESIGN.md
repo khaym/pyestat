@@ -163,11 +163,16 @@ An unknown transform name surfaces as `UnknownTransformError` (a typed
 a same-layer *conflict* — two rules claiming one role pattern: a user /
 project conflict surfaces as `AmbiguousRuleError`, while a built-in conflict
 is skipped (falling through to a generic rule or Layer D), being a packaging
-bug the caller cannot fix and one meant to be caught in CI. A registered
-transform that *itself* raises at runtime is a library bug, not an authoring
-error, and surfaces regardless of origin; the callable escape hatch
-(Decision C), when added, will route its runtime exceptions by this same
-rule.
+bug the caller cannot fix and one meant to be caught in CI. A declared
+*strict* time format (`yearly` / `monthly_e_stat` / `quarterly_e_stat`) that
+the table's codes violate is a `TimeFormatError` — an authoring decision (the
+rule chose a format the data does not fit), so it routes by provenance like
+the others rather than being silently re-normalized; the total
+`best_effort_time` role-default never lands here (see Decision J). A
+registered transform that *itself* raises at runtime — a genuine code bug,
+not a format the author mis-chose — is a library bug and surfaces regardless
+of origin; the callable escape hatch (Decision C), when added, will route its
+runtime exceptions by this same rule.
 
 ### C. Rule Description Format
 
@@ -235,6 +240,10 @@ and granularity:
     ...
 }
 ```
+
+*(Superseded by Decision J (#35): these fields are now nested in a single
+`time` object — `{code, label, normalized, granularity}`. `to_flat()`
+reproduces exactly the flat keys shown here.)*
 
 ISO 8601 has no quarter notation; `"YYYY-Qn"` is a widely-recognized
 convention preferred over the heavier `YYYY-MM-DD/YYYY-MM-DD` period
@@ -338,6 +347,59 @@ Rationale:
 - *Rate limiting*: e-Stat publishes no rate limit. No client-side
   inter-page sleep at MVP. If 429 is ever observed, the retry layer
   absorbs it.
+
+### J. Output Contract — Nested Canonical Cells (2026-06-07, #35)
+
+**Decision: one canonical *nested* record shape across every conversion
+path, with a lossless flat projection on the side.**
+
+Before #35 the `rule="auto"` paths disagreed on shape. Layer D added
+`{axis}_label`, a normalized `time` plus `time_code` / `time_granularity`,
+and kept `value` / `unit`; the generic v2 1:1 path emitted bare
+`{axis: code}` columns — no labels, no time metadata, and (on a table with
+no VALUE-role axis) no value at all. A caller could not write one piece of
+code against the result.
+
+Each field is now a self-describing object:
+
+| Cell | Shape | Notes |
+|---|---|---|
+| dimension (category / area / tab) | `{code, label}` | A label-less code (trade HS, where `code == name`) carries its code as the label, so the cell is never partial. |
+| time | `{code, label, normalized, granularity}` | Raw code, e-Stat display name, ISO-leaning normalized string, granularity tag. An unrecognised code keeps `normalized == code` and `granularity = None`. |
+| measure (observation) | `{value, unit}` | Wrapping the value with its unit keeps a pivoted table correct when measures carry different units (trade's 数量 in ＮＯ vs 金額 in 千円), which a single shared `unit` sibling could not. |
+
+The nested form is canonical because it is self-describing — an LLM agent
+reads `row["cat01"]["label"]` without knowing a suffix convention — and
+because nested → flat is a cheap, lossless projection whereas flat → nested
+would require re-pairing by a fragile suffix rule.
+`StatsDataResponse.to_flat()` gives pandas users the legacy
+one-column-per-field shape (`cat01` / `cat01_label`; `time` / `time_code` /
+`time_label` / `time_granularity`; `value` / `unit`);
+`pandas.DataFrame(resp.to_flat())` is the DataFrame path, so no pandas
+dependency is taken on.
+
+A time column's *declared format* drives its `normalized` / `granularity`,
+and the same format machinery serves every path so the object never drifts.
+The role-default `best_effort_time` (what a short-form column and the generic
+Layer A rule inherit) is **total** — it probes the parsers and keeps an
+unrecognised code raw, never raising — so the no-rule paths (Layer D, generic)
+cannot fail on a time code. A rule that *explicitly* declares a strict format
+(`yearly` / `monthly_e_stat` / `quarterly_e_stat`) is honored: if the table's
+codes do not match that shape, the mismatch is a typed `TimeFormatError`
+routed by provenance (Decision B) — a caller-authored rule surfaces so they
+can pick the right format, a built-in degrades to Layer D — rather than being
+silently re-normalized by a best-effort guess the author did not ask for.
+This keeps the agency split intact: the library's total default never
+crashes, while a caller's explicit instruction is either applied as written
+or surfaced for them to fix. `rule=None` (raw) is unchanged: Layer 2's flat
+rows pass through, and `to_flat()` is a no-op on them.
+
+**Scope boundary.** This decision fixes the *shape*. Two content gaps
+follow it, tracked separately: a table with no VALUE-role axis (e.g.
+quarterly GDP, `category + time`) still omits the observation value until
+#33 makes it intrinsic; standard-code normalization of `area` is added as
+an additive field by #4. Auto-generated pivots (#34) follow the measure
+shape above.
 
 ## Open Questions (Carried to #7)
 

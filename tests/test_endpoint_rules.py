@@ -28,7 +28,7 @@ import pytest
 from pyestat._endpoint import EstatClient
 from pyestat._http import EstatHttpClient
 from pyestat._engine.rule import RuleV2
-from pyestat.errors import RoleResolutionError, UnknownTransformError
+from pyestat.errors import RoleResolutionError, TimeFormatError, UnknownTransformError
 
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
@@ -126,12 +126,17 @@ class TestAutoMode:
 
     def test_auto_uses_layer_a_generic_when_no_rule_matches(self) -> None:
         # No v2 rules supplied; the fixture is a clean value+category+time
-        # table, so Layer A builds a generic rule — time normalized by the
-        # role-default, category passed through, and the cell left uncoerced
-        # (Layer A never casts).
+        # table, so Layer A builds a generic rule. Output is canonical cells
+        # (#35): a time object, a {code,label} category, and a {value,unit}
+        # measure — the cell left uncoerced (Layer A never casts).
         client = _make_client(_population_payload(), builtin_rules=[])
         resp = client.get_stats_data("0003448237")
-        assert resp.values[0] == {"time": "2020", "cat01": "000", "value": "126146"}
+        assert resp.values[0] == {
+            "time": {"code": "2020000000", "label": "2020年",
+                     "normalized": "2020", "granularity": "yearly"},
+            "cat01": {"code": "000", "label": "男女計"},
+            "value": {"value": "126146", "unit": "千人"},
+        }
 
     def test_auto_applies_matching_v2_rule(self) -> None:
         # A v2 rule whose role_pattern matches the classified table is
@@ -148,7 +153,11 @@ class TestAutoMode:
         })
         client = _make_client(_population_payload(), builtin_rules=[builtin])
         resp = client.get_stats_data("0003448237")
-        assert resp.values[0] == {"year": "2020", "value": "126146"}
+        assert resp.values[0] == {
+            "year": {"code": "2020000000", "label": "2020年",
+                     "normalized": "2020", "granularity": "yearly"},
+            "value": {"value": "126146", "unit": "千人"},
+        }
 
     def test_auto_falls_to_layer_d_when_table_cannot_be_structured(self) -> None:
         # A multi-value-type tab axis is a meta-axis needing the #10 pivot;
@@ -156,10 +165,10 @@ class TestAutoMode:
         # labels, raw codes and cell preserved, nothing dropped.
         client = _make_client(_meta_axis_payload(), builtin_rules=[])
         row = client.get_stats_data("X").values[0]
-        assert row["time"] == "2020"
-        assert row["time_granularity"] == "yearly"
-        assert row["tab_label"] == "数量"
-        assert row["value"] == "5"
+        assert row["time"]["normalized"] == "2020"
+        assert row["time"]["granularity"] == "yearly"
+        assert row["tab"]["label"] == "数量"
+        assert row["value"]["value"] == "5"
 
     def test_auto_demotes_to_layer_d_when_matched_rule_cannot_bind(self) -> None:
         # A builtin matches the role pattern but references a role absent
@@ -177,9 +186,9 @@ class TestAutoMode:
         })
         client = _make_client(_population_payload(), builtin_rules=[builtin])
         row = client.get_stats_data("0003448237").values[0]
-        assert row["tab_label"] == "総人口"  # Layer D output, not a crash
-        assert row["time"] == "2020"
-        assert row["value"] == "126146"
+        assert row["tab"]["label"] == "総人口"  # Layer D output, not a crash
+        assert row["time"]["normalized"] == "2020"
+        assert row["value"]["value"] == "126146"
 
 
 class TestAutoPivot:
@@ -204,7 +213,12 @@ class TestAutoPivot:
         })
         client = _make_client(_meta_axis_payload(), builtin_rules=[pivot])
         out = client.get_stats_data("X").values
-        assert out == ({"time": "2020", "quantity": "5", "amount": "1000"},)
+        assert out == ({
+            "time": {"code": "2020000000", "label": "2020年",
+                     "normalized": "2020", "granularity": "yearly"},
+            "quantity": {"value": "5", "unit": None},
+            "amount": {"value": "1000", "unit": None},
+        },)
 
     def test_builtin_pivot_that_cannot_bind_demotes_to_layer_d(self) -> None:
         # A builtin (Layer B) pivot rule that takes the pivot path (it has a
@@ -226,10 +240,10 @@ class TestAutoPivot:
         })
         client = _make_client(_meta_axis_payload(), builtin_rules=[broken])
         row = client.get_stats_data("X").values[0]
-        # Layer D output (additive labels, raw cell preserved), not a crash.
-        assert row["tab_label"] == "数量"
-        assert row["time"] == "2020"
-        assert row["value"] == "5"
+        # Layer D output (canonical cells, raw cell preserved), not a crash.
+        assert row["tab"]["label"] == "数量"
+        assert row["time"]["normalized"] == "2020"
+        assert row["value"]["value"] == "5"
 
 
 class TestAutoFailurePolicy:
@@ -288,9 +302,44 @@ class TestAutoFailurePolicy:
         })
         client = _make_client(_population_payload(), builtin_rules=[builtin])
         row = client.get_stats_data("0003448237").values[0]
-        assert row["tab_label"] == "総人口"  # Layer D output, not a crash
-        assert row["time"] == "2020"
-        assert row["value"] == "126146"
+        assert row["tab"]["label"] == "総人口"  # Layer D output, not a crash
+        assert row["time"]["normalized"] == "2020"
+        assert row["value"]["value"] == "126146"
+
+    def test_surfaces_user_rule_with_mismatched_time_format(self) -> None:
+        # A user rule declares monthly_e_stat, but the fixture's time codes are
+        # yearly-shaped. The mismatch is a TimeFormatError; because the caller
+        # authored the rule, it surfaces so they can pick the right format —
+        # not a silently best-efforted (and wrong) result they couldn't trace.
+        user = RuleV2.model_validate({
+            "schema_version": "2",
+            "match": {"role_pattern": self._PATTERN},
+            "output": [
+                {"column": "t", "source": {"role": "time"}, "transform": "monthly_e_stat"},
+                {"column": "value", "source": {"role": "value"}, "transform": "passthrough"},
+            ],
+        })
+        client = _make_client(_population_payload(), builtin_rules=[], user_rules=[user])
+        with pytest.raises(TimeFormatError, match="monthly_e_stat"):
+            client.get_stats_data("0003448237")
+
+    def test_degrades_builtin_with_mismatched_time_format_to_layer_d(self) -> None:
+        # The same mismatched format in a built-in is the library's problem,
+        # not the caller's; auto degrades to Layer D (best-effort time, raw
+        # cell preserved) rather than crashing the caller.
+        builtin = RuleV2.model_validate({
+            "schema_version": "2",
+            "match": {"role_pattern": self._PATTERN},
+            "output": [
+                {"column": "t", "source": {"role": "time"}, "transform": "monthly_e_stat"},
+                {"column": "value", "source": {"role": "value"}, "transform": "passthrough"},
+            ],
+        })
+        client = _make_client(_population_payload(), builtin_rules=[builtin])
+        row = client.get_stats_data("0003448237").values[0]
+        assert row["tab"]["label"] == "総人口"  # Layer D output, not a crash
+        assert row["time"]["normalized"] == "2020"
+        assert row["value"]["value"] == "126146"
 
     def test_degrades_conflicting_builtins_instead_of_crashing(self) -> None:
         # Two built-ins claiming one role pattern is a library packaging bug;
@@ -306,7 +355,12 @@ class TestAutoFailurePolicy:
 
         client = _make_client(_population_payload(), builtin_rules=[_dup("a"), _dup("b")])
         row = client.get_stats_data("0003448237").values[0]
-        assert row == {"time": "2020", "cat01": "000", "value": "126146"}
+        assert row == {
+            "time": {"code": "2020000000", "label": "2020年",
+                     "normalized": "2020", "granularity": "yearly"},
+            "cat01": {"code": "000", "label": "男女計"},
+            "value": {"value": "126146", "unit": "千人"},
+        }
 
 
 class TestHeuristicMode:
@@ -321,12 +375,12 @@ class TestHeuristicMode:
         client = _make_client(_payload_with_area(_population_payload()))
         resp = client.get_stats_data("0003448237", rule="heuristic")
         row = resp.values[0]
-        assert row["tab_label"] == "総人口"
+        assert row["tab"]["label"] == "総人口"
         # Layer D still normalizes the time axis best-effort (the patched
         # fixture uses a monthly code) but does not cast the value.
-        assert row["time"] == "2022-01"
-        assert row["time_granularity"] == "monthly"
-        assert row["value"] == "126146"
+        assert row["time"]["normalized"] == "2022-01"
+        assert row["time"]["granularity"] == "monthly"
+        assert row["value"]["value"] == "126146"
 
 
 class TestExplicitRule:
@@ -348,7 +402,11 @@ class TestExplicitRule:
         })
         client = _make_client(_population_payload())
         resp = client.get_stats_data("0003448237", rule=rule)
-        assert resp.values[0] == {"yr": "2020", "value": "126146"}
+        assert resp.values[0] == {
+            "yr": {"code": "2020000000", "label": "2020年",
+                   "normalized": "2020", "granularity": "yearly"},
+            "value": {"value": "126146", "unit": "千人"},
+        }
 
     def test_explicit_rule_that_cannot_bind_surfaces_typed_error(self) -> None:
         # An explicit rule is caller-authored: a binding failure surfaces as a
@@ -363,6 +421,37 @@ class TestExplicitRule:
         client = _make_client(_population_payload())
         with pytest.raises(RoleResolutionError, match="area"):
             client.get_stats_data("0003448237", rule=rule)
+
+
+class TestFlatProjection:
+    """``StatsDataResponse.to_flat()`` projects the nested canonical values to
+    the legacy flat suffix convention, so pandas users keep one column per
+    field. The nested form stays the single source of truth; flat is a view
+    (``pandas.DataFrame(resp.to_flat())``)."""
+
+    def test_auto_nested_flattens_to_legacy_suffix_columns(self) -> None:
+        # The Layer A generic auto output (nested) flattens to the familiar
+        # cat01 / cat01_label, time / time_code / time_label /
+        # time_granularity, and value / unit columns.
+        client = _make_client(_population_payload(), builtin_rules=[])
+        flat = client.get_stats_data("0003448237").to_flat()[0]
+        assert flat == {
+            "time": "2020",
+            "time_code": "2020000000",
+            "time_label": "2020年",
+            "time_granularity": "yearly",
+            "cat01": "000",
+            "cat01_label": "男女計",
+            "value": "126146",
+            "unit": "千人",
+        }
+
+    def test_raw_response_to_flat_is_unchanged(self) -> None:
+        # rule=None rows are already flat, so to_flat is a no-op — the method
+        # is safe to call on any response shape.
+        client = _make_client(_population_payload())
+        resp = client.get_stats_data("0003448237", rule=None)
+        assert resp.to_flat() == resp.values
 
 
 class TestUserRules:
