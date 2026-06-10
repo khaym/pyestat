@@ -9,6 +9,7 @@ always has output to return.
 """
 from __future__ import annotations
 
+from pyestat._endpoint import ClassObj
 from pyestat._engine.apply import apply_v2_rule
 from pyestat._engine.classifier import (
     AxisClassification,
@@ -90,6 +91,31 @@ def _axis(axis_id: str, role: AxisRole) -> AxisClassification:
     return AxisClassification(axis_id, role, Confidence.HIGH, ("test",))
 
 
+def _classobj(axis_id: str, members: list[tuple[str, str]]) -> ClassObj:
+    """A ClassObj from (code, name) pairs — the meta-axis member names a
+    generated pivot rule turns into one ``where`` column each. Flat (no
+    ``@level``/``@parentCode``), so it stands for the clean 表章項目 axis."""
+    return ClassObj(
+        id=axis_id,
+        name=axis_id,
+        classes=tuple({"code": code, "name": name} for code, name in members),
+    )
+
+
+def _classobj_hier(axis_id: str, members: list[tuple[str, str, str, str | None]]) -> ClassObj:
+    """A ClassObj whose members carry a code hierarchy. Each member is
+    ``(code, name, level, parentCode)`` (parentCode ``None`` for a root) — the
+    shape e-Stat uses for a cross axis like trade's 合計/月次 × 数量/金額."""
+    return ClassObj(
+        id=axis_id,
+        name=axis_id,
+        classes=tuple(
+            {"code": c, "name": n, "level": lv, **({"parentCode": p} if p else {})}
+            for c, n, lv, p in members
+        ),
+    )
+
+
 class TestBuildGenericRule:
     """``build_generic_rule`` turns a classification into a Layer A rule, or
     declines (``None``) when the table cannot be structured generically and
@@ -143,11 +169,14 @@ class TestBuildGenericRule:
             "value": {"value": "126146", "unit": None},
         },)
 
-    def test_meta_axis_declines(self) -> None:
+    def test_meta_axis_declines_without_class_objs(self) -> None:
+        # A meta-axis can be auto-pivoted (see TestBuildGenericPivot), but only
+        # when the member names are available to name the where-columns. With
+        # no class metadata the names are unknown, so route to Layer D.
         clf = TableClassification((
             _axis("time", AxisRole.TIME),
             _axis("cat02", AxisRole.META_AXIS),
-            _axis("tab", AxisRole.VALUE),
+            _axis("area", AxisRole.AREA),
         ))
         assert build_generic_rule(clf) is None
 
@@ -181,3 +210,145 @@ class TestBuildGenericRule:
             _axis("tab", AxisRole.VALUE),
         ))
         assert build_generic_rule(clf) is None
+
+
+# A trade-like table (#17 pattern 2): cat02 is the meta-axis whose members
+# (単位2 / 合計_数量2 / 合計_金額) each spread one logical (cat01, area, time)
+# record across rows. Auto-pivoting folds them back into one record.
+_TRADE_CLF = TableClassification((
+    _axis("cat01", AxisRole.CATEGORY),
+    _axis("cat02", AxisRole.META_AXIS),
+    _axis("area", AxisRole.AREA),
+    _axis("time", AxisRole.TIME),
+))
+_TRADE_META = (
+    _classobj("cat02", [("110", "単位2"), ("130", "合計_数量2"), ("140", "合計_金額")]),
+)
+
+
+class TestBuildGenericPivot:
+    """Business rule (#34): a table with exactly one meta-axis is no longer
+    declined — Layer A auto-generates a *pivot* rule that folds the meta-axis
+    members into one record per non-meta group, so an uncovered meta-axis
+    table comes back folded (1 row per logical record) rather than spread.
+    The meta-axis member names become the pivot's columns; the non-meta axes
+    stay 1:1. The decline conditions that would risk a wrong or raising rule
+    (≥2 meta-axes, a repeated non-meta role, a column-name collision, or
+    missing member names) still route to Layer D.
+    """
+
+    def test_single_meta_axis_yields_pivot_rule(self) -> None:
+        rule = build_generic_rule(_TRADE_CLF, _TRADE_META)
+        assert rule is not None
+        cols = {c.column: c for c in rule.output}
+        # Non-meta axes stay 1:1, in axis order, with their role-defaults.
+        assert cols["cat01"].source.role == AxisRole.CATEGORY
+        assert cols["cat01"].source.where is None
+        assert cols["area"].source.role == AxisRole.AREA
+        assert cols["time"].transform == "best_effort_time"
+        # One where-column per meta member, named by its (NFKC) member name.
+        for name in ("単位2", "合計_数量2", "合計_金額"):
+            assert cols[name].source.role == AxisRole.META_AXIS
+            assert cols[name].source.where.equals == name
+            assert cols[name].transform == "passthrough"
+
+    def test_built_pivot_rule_folds_rows_directly(self) -> None:
+        # What Layer A builds applies directly (no separate load/expand) and
+        # folds the three meta rows of a group into one record (#35 cells).
+        rule = build_generic_rule(_TRADE_CLF, _TRADE_META)
+        assert rule is not None
+        rows = (
+            {"cat01": "0101", "cat02": "110", "area": "50103", "time": "2005000000", "value": "ＮＯ"},
+            {"cat01": "0101", "cat02": "130", "area": "50103", "time": "2005000000", "value": "16"},
+            {"cat01": "0101", "cat02": "140", "area": "50103", "time": "2005000000", "value": "35220"},
+        )
+        out = apply_v2_rule(rows, _TRADE_CLF, rule, class_objs=_TRADE_META)
+        assert len(out) == 1
+        assert out[0]["cat01"] == {"code": "0101", "label": "0101"}
+        assert out[0]["time"]["normalized"] == "2005"
+        assert out[0]["単位2"] == {"value": "ＮＯ", "unit": None}
+        assert out[0]["合計_数量2"] == {"value": "16", "unit": None}
+        assert out[0]["合計_金額"] == {"value": "35220", "unit": None}
+
+    def test_member_name_is_nfkc_normalized(self) -> None:
+        # The column/selector name folds full-width to half-width so it matches
+        # the meta-member name the pivot path also NFKC-folds when selecting.
+        objs = (_classobj("cat02", [("110", "金額２")]),)  # full-width 2
+        rule = build_generic_rule(_TRADE_CLF, objs)
+        assert rule is not None
+        col = next(c for c in rule.output if c.source.where is not None)
+        assert col.column == "金額2"
+        assert col.source.where.equals == "金額2"
+
+    def test_two_meta_axes_decline(self) -> None:
+        # Two measure-spread axes need explicit disambiguation; Layer A only
+        # folds a single meta-axis, so route to Layer D.
+        clf = TableClassification((
+            _axis("cat01", AxisRole.META_AXIS),
+            _axis("cat02", AxisRole.META_AXIS),
+            _axis("time", AxisRole.TIME),
+        ))
+        objs = (_classobj("cat01", [("1", "a")]), _classobj("cat02", [("1", "b")]))
+        assert build_generic_rule(clf, objs) is None
+
+    def test_repeated_nonmeta_role_with_meta_axis_declines(self) -> None:
+        # Two category axes alongside the meta-axis: which column reads which
+        # category is unaddressable, so decline even though the meta-axis is
+        # single (#34 keeps the repeated-non-meta-role decline).
+        clf = TableClassification((
+            _axis("cat01", AxisRole.CATEGORY),
+            _axis("cat03", AxisRole.CATEGORY),
+            _axis("cat02", AxisRole.META_AXIS),
+            _axis("time", AxisRole.TIME),
+        ))
+        assert build_generic_rule(clf, _TRADE_META) is None
+
+    def test_member_name_colliding_with_nonmeta_column_declines(self) -> None:
+        # A meta member literally named "area" would collide with the area
+        # column. Decline rather than let RuleV2's duplicate-column check raise
+        # on the auto path (which would break the "auto never raises" promise).
+        objs = (_classobj("cat02", [("110", "area"), ("140", "合計_金額")]),)
+        assert build_generic_rule(_TRADE_CLF, objs) is None
+
+    def test_members_normalizing_to_the_same_name_decline(self) -> None:
+        # Two members that NFKC-fold to one name would collide as columns.
+        objs = (_classobj("cat02", [("1", "金額２"), ("2", "金額2")]),)
+        assert build_generic_rule(_TRADE_CLF, objs) is None
+
+    def test_value_role_coexisting_with_meta_axis_declines(self) -> None:
+        # #34 F1: a meta-axis already spreads the measures across rows. A
+        # single-member tab (VALUE) alongside it would emit a spurious `value`
+        # 1:1 column that, after grouping, reads an arbitrary group member's
+        # cell (rows[0]) — a non-deterministic, duplicate column. Decline to
+        # Layer D rather than fold this ambiguous shape.
+        clf = TableClassification((
+            _axis("tab", AxisRole.VALUE),
+            _axis("cat02", AxisRole.META_AXIS),
+            _axis("time", AxisRole.TIME),
+        ))
+        assert build_generic_rule(clf, _TRADE_META) is None
+
+    def test_hierarchical_meta_axis_declines(self) -> None:
+        # #34 flatness gate: a meta-axis whose members carry a code hierarchy
+        # (@level/@parentCode) folds a second dimension into its members —
+        # trade's 合計/月次 × 数量/金額. Flat-pivoting it would spread that
+        # hidden dimension into columns, so Layer A declines (→ Layer D); the
+        # precise reshape is a rule's job (#37), not the generic auto path.
+        objs = (_classobj_hier("cat02", [
+            ("120", "合計_数量", "1", None),
+            ("150", "1月_数量", "2", "120"),
+            ("160", "2月_数量", "2", "120"),
+        ]),)
+        assert build_generic_rule(_TRADE_CLF, objs) is None
+
+    def test_flat_meta_axis_with_levels_still_pivots(self) -> None:
+        # A meta-axis carrying @level but no real hierarchy (all one level, no
+        # parent) is still flat — the clean 表章項目 case — so it pivots. The
+        # gate keys on hierarchy (parent / depth), not on @level being present.
+        objs = (_classobj_hier("cat02", [
+            ("11", "金額", "1", None),
+            ("12", "数量", "1", None),
+        ]),)
+        rule = build_generic_rule(_TRADE_CLF, objs)
+        assert rule is not None
+        assert [c.column for c in rule.output if c.source.where is not None] == ["金額", "数量"]

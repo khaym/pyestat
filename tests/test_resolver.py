@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import pytest
 
+from pyestat._endpoint import ClassObj
 from pyestat._engine.classifier import (
     AxisClassification,
     AxisRole,
@@ -29,6 +30,14 @@ def _axis(
     axis_id: str, role: AxisRole, confidence: Confidence = Confidence.HIGH
 ) -> AxisClassification:
     return AxisClassification(axis_id, role, confidence, ("test",))
+
+
+def _classobj(axis_id: str, members: list[tuple[str, str]]) -> ClassObj:
+    return ClassObj(
+        id=axis_id,
+        name=axis_id,
+        classes=tuple({"code": code, "name": name} for code, name in members),
+    )
 
 
 # A clean time + area + value table — every role appears once and is
@@ -135,15 +144,34 @@ class TestLayerAFallback:
             AxisRole.TIME, AxisRole.AREA, AxisRole.VALUE,
         ]
 
-    def test_no_match_and_no_generic_routes_to_layer_d(self) -> None:
-        # A meta-axis table: no specific rule and build_generic declines,
-        # so resolution returns None (the endpoint then runs Layer D).
+    def test_meta_axis_without_class_objs_routes_to_layer_d(self) -> None:
+        # A meta-axis table can be auto-pivoted, but only with the member
+        # names; with no class_objs the generic fallback declines, so
+        # resolution returns None (the endpoint then runs Layer D).
         meta = TableClassification((
             _axis("time", AxisRole.TIME),
             _axis("cat02", AxisRole.META_AXIS),
-            _axis("tab", AxisRole.VALUE),
+            _axis("area", AxisRole.AREA),
         ))
         assert resolve_v2(meta) is None
+
+    def test_meta_axis_with_class_objs_builds_generic_pivot(self) -> None:
+        # Given the member names, the Layer A fallback auto-generates a pivot
+        # rule (#34) instead of declining — an uncovered meta-axis table now
+        # resolves to a GENERIC rule that folds it rather than to Layer D.
+        meta = TableClassification((
+            _axis("cat01", AxisRole.CATEGORY),
+            _axis("cat02", AxisRole.META_AXIS),
+            _axis("area", AxisRole.AREA),
+            _axis("time", AxisRole.TIME),
+        ))
+        objs = (_classobj("cat02", [("130", "合計_数量2"), ("140", "合計_金額")]),)
+        result = resolve_v2(meta, class_objs=objs)
+        assert result is not None
+        assert result.layer is RuleLayer.GENERIC
+        # The meta members became where-columns — the mark of a pivot rule.
+        where_cols = [c.column for c in result.rule.output if c.source.where is not None]
+        assert where_cols == ["合計_数量2", "合計_金額"]
 
 
 class TestThresholdGate:

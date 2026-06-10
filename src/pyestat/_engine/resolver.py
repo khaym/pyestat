@@ -30,6 +30,7 @@ from collections.abc import Sequence
 from enum import Enum
 from typing import NamedTuple
 
+from pyestat._endpoint import ClassObj
 from pyestat._engine.classifier import Confidence, TableClassification
 from pyestat._engine.role_defaults import build_generic_rule
 from pyestat._engine.rule import RuleV2
@@ -71,6 +72,7 @@ def resolve_v2(
     user: Sequence[RuleV2] = (),
     project: Sequence[RuleV2] = (),
     builtin: Sequence[RuleV2] = (),
+    class_objs: Sequence[ClassObj] = (),
     threshold: Confidence = Confidence.MEDIUM,
     stats_data_id: str = "",
 ) -> ResolvedRule | None:
@@ -79,6 +81,11 @@ def resolve_v2(
     See the module docstring for the resolution order, the provenance the
     :class:`ResolvedRule` layer carries, and the meaning of a ``None``
     return. ``stats_data_id`` only labels an :class:`AmbiguousRuleError`.
+
+    ``class_objs`` carries the table's class metadata; the generic Layer A
+    fallback needs the meta-axis member names to auto-generate a pivot rule
+    (#34). Omitted (the default), a meta-axis table cannot be pivoted and
+    routes to Layer D.
     """
     if not classification.clears(threshold):
         return None
@@ -104,7 +111,7 @@ def resolve_v2(
             continue
         if matched:
             return ResolvedRule(matched[0], layer)
-    generic = build_generic_rule(classification)
+    generic = build_generic_rule(classification, class_objs)
     if generic is None:
         return None
     return ResolvedRule(generic, RuleLayer.GENERIC)

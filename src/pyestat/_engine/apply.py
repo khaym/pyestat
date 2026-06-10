@@ -13,7 +13,13 @@ from typing import Any, Literal
 
 from pyestat._endpoint import ClassObj
 from pyestat._engine.canonical import dimension, measure, time_cell
-from pyestat._engine.classifier import AxisRole, TableClassification, _norm, classify
+from pyestat._engine.classifier import (
+    AxisRole,
+    TableClassification,
+    _norm,
+    classify,
+    pivot_member_name,
+)
 from pyestat._engine.registry import RegistryKeyError
 from pyestat._engine.resolver import ResolvedRule
 from pyestat._engine.role_defaults import TIME_PARSERS, TRANSFORMS, expand_short_form
@@ -264,7 +270,7 @@ def _apply_pivot(
             reason="pivot needs class metadata to match `where` by member name",
         )
     name_by_code = {
-        c["code"]: _norm(str(c.get("name", c["code"])))
+        c["code"]: pivot_member_name(c)
         for obj in class_objs
         if obj.id == meta_id
         for c in obj.classes

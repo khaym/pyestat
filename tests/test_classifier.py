@@ -28,6 +28,7 @@ from pyestat._engine.classifier import (
     Confidence,
     TableClassification,
     classify,
+    is_flat_axis,
 )
 
 
@@ -349,3 +350,41 @@ class TestRepresentativeTables:
             AxisRole.CATEGORY, AxisRole.META_AXIS, AxisRole.AREA, AxisRole.TIME,
         )
         assert tc.clears()  # trade is pivotable, not routed to Layer D
+
+
+class TestIsFlatAxis:
+    """``is_flat_axis`` reads e-Stat's @level / @parentCode to tell a clean,
+    flat measure axis (the 表章項目 convention) from a *cross* axis that folds
+    a second dimension into its members (trade's 合計/月次 × 数量/金額). The #34
+    auto-pivot fires only on a flat meta-axis; a hierarchical one rides Layer D.
+
+    Business rule confirmed by the 2026-06 survey (8 statsCodes, 186 axes):
+    every clean measure axis is flat; the only hierarchical meta-axis is
+    trade's cat02 cross.
+    """
+
+    def test_flat_when_one_level_and_no_parent(self) -> None:
+        # 表章項目: members at a single level, none naming a parent.
+        assert is_flat_axis(_TAB_MULTI) is True
+
+    def test_flat_when_level_is_empty(self) -> None:
+        # Real GDP tab members carry @level="" — absence of depth, not a tier.
+        tab = _axis("tab", "表章項目",
+                    {"code": "11", "name": "金額", "level": ""},
+                    {"code": "12", "name": "前年同期比", "level": ""})
+        assert is_flat_axis(tab) is True
+
+    def test_hierarchical_when_a_member_has_a_parent(self) -> None:
+        # trade cat02 in miniature: 合計 (root) over monthly children.
+        cross = _axis("cat02", "統計品目表の数量・金額",
+                      {"code": "120", "name": "合計_数量", "level": "1"},
+                      {"code": "150", "name": "1月_数量", "level": "2", "parentCode": "120"})
+        assert is_flat_axis(cross) is False
+
+    def test_hierarchical_when_a_deeper_level_appears(self) -> None:
+        # A level beyond {"", "1"} is a hierarchy even without an explicit
+        # parentCode in the sampled rows.
+        deep = _axis("cat01", "用途分類",
+                     {"code": "1", "name": "合計", "level": "1"},
+                     {"code": "2", "name": "食料", "level": "3"})
+        assert is_flat_axis(deep) is False

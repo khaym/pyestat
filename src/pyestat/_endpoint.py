@@ -298,6 +298,7 @@ class EstatClient:
                 user=self._user_rules,
                 project=self._project_rules,
                 builtin=self._builtin_rules,
+                class_objs=first.class_objs,
                 stats_data_id=stats_data_id,
             )
             transformed = apply_auto(values, first.class_objs, classification, resolved)

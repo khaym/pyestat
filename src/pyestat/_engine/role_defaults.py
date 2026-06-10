@@ -24,11 +24,18 @@ role-default map.
 """
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any, Callable
 
-from pyestat._engine.classifier import AxisRole, TableClassification
+from pyestat._endpoint import ClassObj
+from pyestat._engine.classifier import (
+    AxisRole,
+    TableClassification,
+    is_flat_axis,
+    pivot_member_name,
+)
 from pyestat._engine.registry import Registry
-from pyestat._engine.rule import MatchV2, OutputColumn, RoleSource, RuleV2
+from pyestat._engine.rule import MatchV2, MetaWhere, OutputColumn, RoleSource, RuleV2
 from pyestat._engine.time import (
     TimePoint,
     best_effort,
@@ -166,37 +173,94 @@ def expand_short_form(rule: RuleV2) -> RuleV2:
     )
 
 
-def build_generic_rule(classification: TableClassification) -> RuleV2 | None:
+def build_generic_rule(
+    classification: TableClassification,
+    class_objs: Sequence[ClassObj] | None = None,
+) -> RuleV2 | None:
     """Build a Layer A generic rule from a classification, or ``None`` when
     the table cannot be structured generically and must route to Layer D.
 
-    Returns ``None`` when any axis is a ``meta-axis`` (folding it into one
-    record needs an explicit #10 pivot rule, which Layer A never generates)
-    or ``unknown`` (the classifier's route-to-Layer-D sentinel), or when a
-    role repeats across axes (no way to address one of several same-role
-    axes yet — #10's ``where`` disambiguates a meta-axis, not this case).
-    Otherwise emits one long-form column per axis: the ``value``
-    role reads the observation cell, every other role reads its own axis,
-    and each inherits its role-default transform. Because every default is
-    a total transform (see module docstring), the resulting rule cannot
-    raise at apply time — the Layer A guarantee.
+    Two shapes are generated. A table with **no meta-axis** maps each axis to
+    one 1:1 column: the ``value`` role reads the observation cell, every other
+    role reads its own axis. A table with **exactly one flat meta-axis** is
+    pivoted (#34): the non-meta axes stay 1:1 and the meta-axis is folded into
+    one ``where`` column per member, so the table comes back one record per
+    non-meta group (column = the member's NFKC-normalized name). Naming the
+    pivot columns needs the member names, so a meta-axis table declines
+    without ``class_objs``.
+
+    Returns ``None`` (→ Layer D) when the table cannot be structured *or* the
+    meta-axis is not safe to flat-pivot: an ``unknown`` axis (the classifier's
+    route-to-D sentinel), **two or more** meta-axes (folding several needs
+    explicit disambiguation), a **repeated non-meta role** (no way to address
+    one of several same-role axes yet), a **hierarchical meta-axis** (its
+    members carry a code hierarchy that folds a second dimension into them —
+    trade's measure×period cross; flat-pivoting would spread it into columns,
+    so it rides Layer D and a rule (#37) reshapes it — see
+    :func:`classifier.is_flat_axis`), a **VALUE role coexisting with the
+    meta-axis** (the measure is already spread across the meta-axis, so a
+    separate ``value`` column would read an arbitrary group member), or a
+    **column-name collision** (a meta
+    member named like a non-meta column, two members folding to one name, or an
+    axis id'd ``value``) — declining rather than letting :class:`RuleV2`'s
+    duplicate-column validator raise on the auto path, which would break the
+    "auto never raises" guarantee.
+
+    Because every role-default is a total transform (see module docstring) and
+    pivot columns are ``passthrough``, the resulting rule cannot raise at apply
+    time — the Layer A guarantee.
     """
     axes = classification.axes
     if not axes:
         return None
     roles = [axis.role for axis in axes]
-    if any(role in (AxisRole.META_AXIS, AxisRole.UNKNOWN) for role in roles):
+    if AxisRole.UNKNOWN in roles:
         return None
-    if len(set(roles)) != len(roles):
+    meta_axes = [axis for axis in axes if axis.role == AxisRole.META_AXIS]
+    if len(meta_axes) > 1:
         return None
+    non_meta = [axis for axis in axes if axis.role != AxisRole.META_AXIS]
+    non_meta_roles = [axis.role for axis in non_meta]
+    if len(set(non_meta_roles)) != len(non_meta_roles):
+        return None
+    nonmeta_cols = _one_to_one_columns(non_meta)
+    if nonmeta_cols is None:
+        return None
+    match = MatchV2(role_pattern=roles)
+    if not meta_axes:
+        return RuleV2(schema_version="2", match=match, output=nonmeta_cols)
+    if AxisRole.VALUE in non_meta_roles:
+        # A meta-axis already spreads the measures across rows, so the
+        # observation lives in each member's cell. A coexisting single-member
+        # VALUE (tab) axis would also emit a 1:1 ``value`` column, which after
+        # grouping reads an arbitrary group member's cell (the pivot's
+        # representative row) — a spurious, non-deterministic duplicate. This
+        # shape (a value type *and* a measure spread) is unexpected, so decline
+        # to Layer D rather than fold it ambiguously.
+        return None
+    meta_cols = _pivot_columns(meta_axes[0], class_objs)
+    if meta_cols is None:
+        return None
+    output = nonmeta_cols + meta_cols
+    if len({col.column for col in output}) != len(output):
+        # A meta member name collides with a non-meta column name (e.g. a
+        # member literally named "area"). Decline (→ Layer D) rather than
+        # raise from RuleV2's duplicate-column validator on the auto path.
+        return None
+    return RuleV2(schema_version="2", match=match, output=output)
+
+
+def _one_to_one_columns(axes: Sequence[Any]) -> list[OutputColumn] | None:
+    """One 1:1 column per non-meta axis, or ``None`` on a name collision.
+
+    The ``value`` role becomes the ``value`` column; every other axis reads
+    its own id. A non-value axis id'd ``value`` would collide with that
+    column, so the rule declines (→ Layer D) instead of building a duplicate.
+    """
     names = ["value" if axis.role == AxisRole.VALUE else axis.axis_id for axis in axes]
     if len(set(names)) != len(names):
-        # A non-value axis whose id collides with the value column's name
-        # (e.g. an axis literally id'd "value"). Decline rather than let
-        # RuleV2's duplicate-column validator raise on the auto path, which
-        # would break the "auto never raises" guarantee.
         return None
-    output = [
+    return [
         OutputColumn(
             column=name,
             source=RoleSource(role=axis.role),
@@ -204,4 +268,37 @@ def build_generic_rule(classification: TableClassification) -> RuleV2 | None:
         )
         for name, axis in zip(names, axes)
     ]
-    return RuleV2(schema_version="2", match=MatchV2(role_pattern=roles), output=output)
+
+
+def _pivot_columns(
+    meta_axis: Any, class_objs: Sequence[ClassObj] | None
+) -> list[OutputColumn] | None:
+    """One ``where`` column per meta-axis member, or ``None`` when the members
+    cannot be named into distinct columns (so the table rides Layer D).
+
+    Each column selects a member by its NFKC-normalized name — the same fold
+    the pivot apply path (#10) applies when matching ``where`` — so the
+    generated selector and the member it targets cannot drift. Declines when
+    the meta-axis is **hierarchical** (its members carry a code hierarchy, so a
+    second dimension is folded into them — trade's 合計/月次 × 数量/金額; a flat
+    pivot would spread it into columns, #34 flatness gate), when no member
+    names are available (no ``class_objs`` or none for this axis: the columns
+    would be unnamed and the measure silently dropped), or when two members
+    fold to one name (they would collide as columns).
+    """
+    if class_objs is None:
+        return None
+    obj = next((o for o in class_objs if o.id == meta_axis.axis_id), None)
+    if obj is None or not is_flat_axis(obj):
+        return None
+    members = [pivot_member_name(c) for c in obj.classes if "code" in c]
+    if not members or len(set(members)) != len(members):
+        return None
+    return [
+        OutputColumn(
+            column=name,
+            source=RoleSource(role=AxisRole.META_AXIS, where=MetaWhere(equals=name)),
+            transform=_FALLBACK_TRANSFORM,
+        )
+        for name in members
+    ]

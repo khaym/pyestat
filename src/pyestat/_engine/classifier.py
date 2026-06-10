@@ -154,6 +154,41 @@ def _member_codes(axis: ClassObj) -> list[str]:
     return [str(c.get("code", "")) for c in axis.classes]
 
 
+def pivot_member_name(member: Mapping[str, Any]) -> str:
+    """A meta-axis member's NFKC-normalized display name, falling back to its
+    code.
+
+    The single home for the fold a pivot uses to name and select a member: the
+    rule generator (``role_defaults._pivot_columns``) names a ``where`` column
+    by it, and the apply path (``apply._apply_pivot``) matches a row's member
+    against it. Both call here so the generated selector and the member it
+    targets fold identically and cannot drift (a divergent fold would silently
+    leave every pivoted column ``None``)."""
+    return _norm(str(member.get("name", member.get("code", ""))))
+
+
+def is_flat_axis(axis: ClassObj) -> bool:
+    """True when an axis is a flat member list with no code hierarchy.
+
+    e-Stat marks a hierarchy with ``@level`` (depth) and ``@parentCode`` (the
+    parent member). A clean measure-spread axis — the 表章項目 convention
+    (GDP / CPI / census / building-starts) — is flat: every member sits at one
+    trivial level and none names a parent. A *cross* axis that folds a second
+    dimension into its members (trade's ``cat02``: 合計 / 各月 × 数量 / 金額 /
+    単位) is hierarchical.
+
+    Layer A auto-pivots only a *flat* meta-axis (#34): flattening a
+    hierarchical one would spread the hidden dimension across columns, so it
+    rides Layer D instead and a rule (#37) reshapes it precisely. A ``@level``
+    of ``""`` or ``"1"`` (the only level present) is *not* a hierarchy — the
+    gate keys on a parent link or a deeper level, not on the field's presence.
+    """
+    if any(c.get("parentCode") for c in axis.classes):
+        return False
+    levels = {str(c.get("level", "")) for c in axis.classes}
+    return not (levels - {"", "1"})
+
+
 # --- per-role detectors ----------------------------------------------------
 
 

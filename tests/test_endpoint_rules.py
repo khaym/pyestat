@@ -73,12 +73,13 @@ def _payload_with_area(base: dict[str, Any]) -> dict[str, Any]:
 
 
 def _meta_axis_payload() -> dict[str, Any]:
-    """A table whose ``tab`` axis carries several value types — a meta-axis.
+    """A table whose ``tab`` axis carries several value types — a single
+    meta-axis (role pattern ``[meta-axis, time]``).
 
-    Folding it into one record needs the #10 pivot, which this MVP lacks, so
-    ``rule="auto"`` cannot structure it generically and must route to
-    Layer D. Built inline (not an on-disk fixture) because its whole point
-    is a shape the bundled fixtures deliberately avoid.
+    With a matching builtin pivot rule it folds via Layer B; with none, Layer A
+    now auto-generates a pivot rule (#34) and folds it generically. Built
+    inline (not an on-disk fixture) because its whole point is a shape the
+    bundled fixtures deliberately avoid.
     """
     return {
         "GET_STATS_DATA": {
@@ -97,6 +98,41 @@ def _meta_axis_payload() -> dict[str, Any]:
                 "DATA_INF": {"VALUE": [
                     {"@tab": "001", "@time": "2020000000", "$": "5"},
                     {"@tab": "002", "@time": "2020000000", "$": "1000"},
+                ]},
+            },
+        }
+    }
+
+
+def _hierarchical_meta_axis_payload() -> dict[str, Any]:
+    """Trade's measure×period cross in miniature: a non-tab axis the data-driven
+    signal flags as a meta-axis (a 単位 string member among numeric ones), whose
+    members also carry a code hierarchy (@level/@parentCode) — 合計 measures
+    (level 1) over monthly children (level 2). The classifier calls it a
+    meta-axis, but flat-pivoting would spread the period dimension into columns,
+    so auto must route it to Layer D rather than fold it (#34 flatness gate).
+    """
+    return {
+        "GET_STATS_DATA": {
+            "RESULT": {"STATUS": 0},
+            "STATISTICAL_DATA": {
+                "RESULT_INF": {"TOTAL_NUMBER": 4},
+                "TABLE_INF": {"@id": "T"},
+                "CLASS_INF": {"CLASS_OBJ": [
+                    {"@id": "cat02", "@name": "数量・金額", "CLASS": [
+                        {"@code": "120", "@name": "合計_数量", "@level": "1"},
+                        {"@code": "140", "@name": "合計_金額", "@level": "1", "@unit": "千円"},
+                        {"@code": "100", "@name": "単位", "@level": "1"},
+                        {"@code": "150", "@name": "1月_数量", "@level": "2", "@parentCode": "120"},
+                    ]},
+                    {"@id": "time", "@name": "時間軸（年次）",
+                     "CLASS": {"@code": "2020000000", "@name": "2020年"}},
+                ]},
+                "DATA_INF": {"VALUE": [
+                    {"@cat02": "120", "@time": "2020000000", "$": "5"},
+                    {"@cat02": "140", "@time": "2020000000", "$": "1000"},
+                    {"@cat02": "100", "@time": "2020000000", "$": "ＮＯ"},
+                    {"@cat02": "150", "@time": "2020000000", "$": "2"},
                 ]},
             },
         }
@@ -159,16 +195,29 @@ class TestAutoMode:
             "value": {"value": "126146", "unit": "千人"},
         }
 
-    def test_auto_falls_to_layer_d_when_table_cannot_be_structured(self) -> None:
-        # A multi-value-type tab axis is a meta-axis needing the #10 pivot;
-        # with no pivot, auto routes to Layer D — best-effort time, additive
-        # labels, raw codes and cell preserved, nothing dropped.
+    def test_auto_pivots_meta_axis_table_without_a_builtin(self) -> None:
+        # #34: a single-meta-axis table with no matching builtin no longer
+        # falls to Layer D — Layer A auto-generates a pivot rule, so auto folds
+        # the two spread rows into one record keyed by the meta-member names.
         client = _make_client(_meta_axis_payload(), builtin_rules=[])
-        row = client.get_stats_data("X").values[0]
-        assert row["time"]["normalized"] == "2020"
-        assert row["time"]["granularity"] == "yearly"
-        assert row["tab"]["label"] == "数量"
-        assert row["value"]["value"] == "5"
+        out = client.get_stats_data("X").values
+        assert len(out) == 1
+        assert out[0]["time"]["normalized"] == "2020"
+        assert out[0]["数量"] == {"value": "5", "unit": None}
+        assert out[0]["金額"] == {"value": "1000", "unit": None}
+
+    def test_auto_does_not_pivot_a_hierarchical_meta_axis(self) -> None:
+        # #34 flatness gate: a meta-axis carrying a code hierarchy folds a
+        # second dimension into its members (trade's measure×period cross), so
+        # auto declines the generic pivot and rides Layer D — rows stay spread
+        # (one per member), data preserved, nothing flattened into columns.
+        client = _make_client(_hierarchical_meta_axis_payload(), builtin_rules=[])
+        out = client.get_stats_data("X").values
+        assert len(out) == 4  # one row per member — not folded into one record
+        # Layer D shape: the meta-axis is a {code,label} dimension, not columns.
+        assert out[0]["cat02"] == {"code": "120", "label": "合計_数量"}
+        assert out[0]["value"] == {"value": "5", "unit": None}
+        assert out[0]["time"]["normalized"] == "2020"
 
     def test_auto_demotes_to_layer_d_when_matched_rule_cannot_bind(self) -> None:
         # A builtin matches the role pattern but references a role absent
