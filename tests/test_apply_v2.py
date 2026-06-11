@@ -246,6 +246,21 @@ class TestTimeFormat:
         with pytest.raises(TimeFormatError, match="not a time format"):
             apply_v2_rule(_ROWS, _CLASSIFICATION, rule)
 
+    def test_best_effort_reads_the_member_name_to_spot_a_year_span(self) -> None:
+        # Population vital statistics (0003001309): the year-span code
+        # 2006001010 is byte-identical to monthly 2006-10; only the member
+        # name 「2006年10月～2007年9月」 tells them apart (#33). The
+        # best_effort_time role-default — what every Layer A generic rule
+        # declares — must consult it, not just the code.
+        rows = ({"time": "2006001010", "area": "00000", "tab": "020", "value": "1"},)
+        rule = _rule([
+            {"column": "time", "source": {"role": "time"}, "transform": "best_effort_time"},
+        ])
+        objs = (_classobj("time", [("2006001010", "2006年10月～2007年9月")]),)
+        out = apply_v2_rule(rows, _CLASSIFICATION, rule, class_objs=objs)
+        assert out[0]["time"]["granularity"] == "yearly"
+        assert out[0]["time"]["normalized"] == "2006-10"
+
 
 class TestRuleAuthoringErrorHierarchy:
     def test_apply_time_authoring_errors_share_one_base(self) -> None:

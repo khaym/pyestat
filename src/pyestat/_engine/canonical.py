@@ -63,9 +63,17 @@ def time_cell(
     code, so the rule's chosen format drives both fields; pass ``None`` for a
     code a parser was run on but did not recognise (also kept raw). Either way
     the object is fully formed.
+
+    Best-effort normalization reads ``label`` too: the member's display name
+    is the only signal that separates a year-span code from a month (#33 —
+    see :func:`pyestat._engine.time.best_effort`).
     """
     if point is _AUTO_NORMALIZE:
-        point = best_effort(code) if isinstance(code, str) else None
+        point = (
+            best_effort(code, label if isinstance(label, str) else None)
+            if isinstance(code, str)
+            else None
+        )
     if point is None:
         return {"code": code, "label": label, "normalized": code, "granularity": None}
     return {

@@ -39,6 +39,7 @@ from pyestat._engine.rule import MatchV2, MetaWhere, OutputColumn, RoleSource, R
 from pyestat._engine.time import (
     TimePoint,
     best_effort,
+    fiscal_year_e_stat,
     monthly_e_stat,
     quarterly_e_stat,
     yearly,
@@ -87,20 +88,25 @@ TRANSFORMS.register("passthrough", _passthrough)
 TRANSFORMS.register("monthly_e_stat", _normalizing(monthly_e_stat))
 TRANSFORMS.register("quarterly_e_stat", _normalizing(quarterly_e_stat))
 TRANSFORMS.register("yearly", _normalizing(yearly))
+TRANSFORMS.register("fiscal_year_e_stat", _normalizing(fiscal_year_e_stat))
 TRANSFORMS.register("best_effort_time", _best_effort_time)
 
 
 # Time-format transforms that yield a full ``TimePoint`` (normalized value +
 # granularity), keyed by the same names the scalar ``TRANSFORMS`` registry
 # uses. The canonical time cell (#35) is built from these so a column's
-# *declared* format drives both fields. ``best_effort_time`` is the total
-# role-default — it returns ``None`` for an unrecognised code and never raises;
-# the strict parsers raise ``ValueError`` on a code whose shape does not match,
-# which the apply path turns into a typed ``TimeFormatError`` routed by
-# provenance (a caller's rule surfaces, a built-in degrades — Decision B).
+# *declared* format drives both fields. The strict parsers raise
+# ``ValueError`` on a code whose shape does not match, which the apply path
+# turns into a typed ``TimeFormatError`` routed by provenance (a caller's
+# rule surfaces, a built-in degrades — Decision B). ``best_effort_time`` is
+# the total role-default; the apply path dispatches it at bind time to
+# ``time_cell``'s auto-normalize (which consults the member name, #33), so
+# its entry here marks membership — code-only callers can still resolve it
+# to ``best_effort``.
 TIME_PARSERS: dict[str, Callable[[str], "TimePoint | None"]] = {
     "best_effort_time": best_effort,
     "yearly": yearly,
+    "fiscal_year_e_stat": fiscal_year_e_stat,
     "monthly_e_stat": monthly_e_stat,
     "quarterly_e_stat": quarterly_e_stat,
 }
@@ -223,7 +229,11 @@ def build_generic_rule(
     non_meta_roles = [axis.role for axis in non_meta]
     if len(set(non_meta_roles)) != len(non_meta_roles):
         return None
-    nonmeta_cols = _one_to_one_columns(non_meta)
+    # On the 1:1 (no-meta) shape the observation cell exists on every e-Stat
+    # row whether or not a tab axis describes it (#33), so the column set
+    # must read it exactly once; on the pivot shape the observation lives in
+    # each member's where-column instead.
+    nonmeta_cols = _one_to_one_columns(non_meta, ensure_value=not meta_axes)
     if nonmeta_cols is None:
         return None
     match = MatchV2(role_pattern=roles)
@@ -250,23 +260,34 @@ def build_generic_rule(
     return RuleV2(schema_version="2", match=match, output=output)
 
 
-def _one_to_one_columns(axes: Sequence[Any]) -> list[OutputColumn] | None:
+def _one_to_one_columns(
+    axes: Sequence[Any], *, ensure_value: bool = False
+) -> list[OutputColumn] | None:
     """One 1:1 column per non-meta axis, or ``None`` on a name collision.
 
     The ``value`` role becomes the ``value`` column; every other axis reads
-    its own id. A non-value axis id'd ``value`` would collide with that
-    column, so the rule declines (→ Layer D) instead of building a duplicate.
+    its own id. With ``ensure_value`` (the 1:1 rule shape, #33) the column
+    set always reads the observation cell exactly once: when no axis carries
+    the VALUE role, a synthesized ``value`` column is appended — the
+    observation exists on every e-Stat row whether or not a tab axis
+    describes it, and without the column it silently vanishes. A non-value
+    axis id'd ``value`` would collide with that column either way, so the
+    rule declines (→ Layer D) instead of building a duplicate.
     """
     names = ["value" if axis.role == AxisRole.VALUE else axis.axis_id for axis in axes]
+    roles = [axis.role for axis in axes]
+    if ensure_value and AxisRole.VALUE not in roles:
+        names.append("value")
+        roles.append(AxisRole.VALUE)
     if len(set(names)) != len(names):
         return None
     return [
         OutputColumn(
             column=name,
-            source=RoleSource(role=axis.role),
-            transform=default_transform(axis.role),
+            source=RoleSource(role=role),
+            transform=default_transform(role),
         )
-        for name, axis in zip(names, axes)
+        for name, role in zip(names, roles)
     ]
 
 

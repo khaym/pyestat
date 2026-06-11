@@ -211,6 +211,65 @@ class TestBuildGenericRule:
         ))
         assert build_generic_rule(clf) is None
 
+    def test_table_without_value_axis_still_emits_the_observation(self) -> None:
+        # Population 0000150007 (category, area, time — no tab axis): the
+        # observation cell exists on every e-Stat row regardless of whether a
+        # tab axis describes it, so the generic rule must always declare a
+        # "value" column. Before #33 it was declared only when an axis carried
+        # the VALUE role, and 124k observations silently vanished.
+        clf = TableClassification((
+            _axis("cat01", AxisRole.CATEGORY),
+            _axis("area", AxisRole.AREA),
+            _axis("time", AxisRole.TIME),
+        ))
+        rule = build_generic_rule(clf)
+        assert rule is not None
+        # The match pattern is untouched — the appended column does not leak
+        # a VALUE role into rule resolution.
+        assert list(rule.match.role_pattern) == [
+            AxisRole.CATEGORY, AxisRole.AREA, AxisRole.TIME,
+        ]
+        cols = {c.column: c for c in rule.output}
+        assert set(cols) == {"cat01", "area", "time", "value"}
+        assert cols["value"].source.role == AxisRole.VALUE
+        assert cols["value"].transform == "passthrough"
+        rows = ({"cat01": "001", "area": "00000", "time": "1991000000",
+                 "value": "124043", "unit": "人"},)
+        out = apply_v2_rule(rows, clf, rule)
+        assert out[0]["value"] == {"value": "124043", "unit": "人"}
+
+    def test_axis_idd_value_without_value_role_declines(self) -> None:
+        # Same collision as above, but on the appended observation column:
+        # an axis literally id'd "value" (no VALUE role anywhere) would
+        # collide with it, so decline (→ Layer D, which preserves both).
+        clf = TableClassification((
+            _axis("value", AxisRole.CATEGORY),
+            _axis("time", AxisRole.TIME),
+        ))
+        assert build_generic_rule(clf) is None
+
+    def test_generic_output_keeps_unit_and_labels(self) -> None:
+        # GDP 0003364993 (value, category, time): the canonical cells (#35)
+        # carry the row's unit (10億円) and the category's display label.
+        # Pinned as #33's regression — the pre-#35 generic path dropped both,
+        # leaving raw codes that an LLM agent cannot interpret.
+        clf = TableClassification((
+            _axis("tab", AxisRole.VALUE),
+            _axis("cat01", AxisRole.CATEGORY),
+            _axis("time", AxisRole.TIME),
+        ))
+        rule = build_generic_rule(clf)
+        assert rule is not None
+        rows = ({"tab": "10", "cat01": "11", "time": "1995100000",
+                 "value": "18747.1", "unit": "10億円"},)
+        objs = (_classobj("cat01", [("11", "1.国内FISIM産出額")]),)
+        out = apply_v2_rule(rows, clf, rule, class_objs=objs)
+        assert out[0]["value"] == {"value": "18747.1", "unit": "10億円"}
+        assert out[0]["cat01"] == {"code": "11", "label": "1.国内FISIM産出額"}
+        # The fiscal-year wire shape resolves as the April-start span (#33).
+        assert out[0]["time"]["normalized"] == "1995-04"
+        assert out[0]["time"]["granularity"] == "yearly"
+
 
 # A trade-like table (#17 pattern 2): cat02 is the meta-axis whose members
 # (単位2 / 合計_数量2 / 合計_金額) each spread one logical (cat01, area, time)
@@ -269,6 +328,15 @@ class TestBuildGenericPivot:
         assert out[0]["単位2"] == {"value": "ＮＯ", "unit": None}
         assert out[0]["合計_数量2"] == {"value": "16", "unit": None}
         assert out[0]["合計_金額"] == {"value": "35220", "unit": None}
+
+    def test_pivot_rule_emits_no_bare_value_column(self) -> None:
+        # On the pivot shape the observation lives in each member's
+        # where-column; a bare "value" column would read an arbitrary group
+        # representative's cell. #33's observation column is appended only
+        # on the 1:1 (no-meta) shape.
+        rule = build_generic_rule(_TRADE_CLF, _TRADE_META)
+        assert rule is not None
+        assert "value" not in {c.column for c in rule.output}
 
     def test_member_name_is_nfkc_normalized(self) -> None:
         # The column/selector name folds full-width to half-width so it matches

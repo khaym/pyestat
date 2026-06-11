@@ -433,6 +433,18 @@ def _time_reader(
     provenance on the auto path (Decision B).
     """
     _validate_transform(col.column, col.transform)  # typo → UnknownTransformError, first
+    if col.transform == "best_effort_time":
+        # The total role-default is time_cell's auto-normalize, which
+        # consults the member's display name — the only signal that
+        # separates a year-span code from a month (#33). Dispatched here,
+        # at bind time, so the per-row reader has exactly one job (a
+        # non-string code takes time_cell's same raw-keeping path).
+        def read_best_effort(row: dict[str, Any]) -> Any:
+            code = row.get(axis_id)
+            return time_cell(code, _label(codes, code))
+
+        return read_best_effort
+
     parser = TIME_PARSERS.get(col.transform)
     if parser is None:
         raise TimeFormatError(

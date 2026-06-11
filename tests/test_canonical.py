@@ -34,21 +34,24 @@ class TestConstructors:
     def test_time_cell_normalizes_and_keeps_all_four_fields(self) -> None:
         # The Done shape: raw code, e-Stat display label, ISO-leaning
         # normalized value, and the granularity tag, all in one object.
+        # The label's range marker flags an October-start annual aggregate
+        # (#33), so the granularity is yearly despite the monthly code shape.
         assert time_cell("2006001010", "2006年10月～2007年9月") == {
             "code": "2006001010",
             "label": "2006年10月～2007年9月",
             "normalized": "2006-10",
-            "granularity": "monthly",
+            "granularity": "yearly",
         }
 
 
 class TestTimeCellIsTotal:
     def test_unrecognised_code_keeps_normalized_equal_to_code(self) -> None:
-        # A 10-digit fiscal-year code no built-in parser accepts: the cell
-        # is still well-formed (normalized == code, granularity None) so the
-        # shape is stable and no path raises.
-        cell = time_cell("1995100000", "1995年度")
-        assert cell["normalized"] == "1995100000"
+        # A code no built-in parser accepts: the cell is still well-formed
+        # (normalized == code, granularity None) so the shape is stable and
+        # no path raises. (The fiscal shape 1995100000 parses as a plain
+        # year since #33, so an unclaimed separator stands in here.)
+        cell = time_cell("1995300000", "1995年度?")
+        assert cell["normalized"] == "1995300000"
         assert cell["granularity"] is None
 
     def test_non_string_code_does_not_raise(self) -> None:
@@ -72,7 +75,7 @@ class TestFlatProjection:
             "time": "2006-10",
             "time_code": "2006001010",
             "time_label": "2006年10月～2007年9月",
-            "time_granularity": "monthly",
+            "time_granularity": "yearly",  # range-marked label = year span (#33)
         }
 
     def test_non_conventional_time_axis_suffixes_granularity_by_key(self) -> None:

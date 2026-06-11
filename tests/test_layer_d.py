@@ -47,15 +47,40 @@ class TestBestEffortTime:
         assert time["code"] == "2020000000"  # raw preserved
         assert time["label"] == "2020年"
 
-    def test_unparseable_time_code_is_left_raw(self) -> None:
-        # A 10-digit fiscal-year code (1995100000) no built-in parser
-        # accepts: best-effort leaves it untouched (normalized == code,
-        # granularity None) rather than erroring — the object stays whole.
+    def test_fiscal_year_code_is_the_april_start_span(self) -> None:
+        # A 10-digit fiscal-year code (GDP 0003364993, 「1995年度」) is the
+        # April-start year span (#33): yearly granularity for rollups, with
+        # normalized "1995-04" so it never merges with calendar 「1995年」 —
+        # CPI ships both as siblings in one time axis.
         class_objs = [_axis("time", "時間軸（年度）", ("1995100000", "1995年度"))]
         out = _layer_d(({"time": "1995100000", "value": "5"},), class_objs)
         time = out[0]["time"]
-        assert time["normalized"] == "1995100000"
+        assert time["normalized"] == "1995-04"
+        assert time["granularity"] == "yearly"
+
+    def test_unparseable_time_code_is_left_raw(self) -> None:
+        # A code no parser accepts: best-effort leaves it untouched
+        # (normalized == code, granularity None) rather than erroring —
+        # the object stays whole.
+        class_objs = [_axis("time", "時間軸（年度）", ("1995300000", "1995年度?"))]
+        out = _layer_d(({"time": "1995300000", "value": "5"},), class_objs)
+        time = out[0]["time"]
+        assert time["normalized"] == "1995300000"
         assert time["granularity"] is None
+
+    def test_year_span_member_name_demotes_monthly_to_yearly(self) -> None:
+        # Population vital statistics (0003001309): the code 2006001010 is
+        # byte-identical to monthly 2006-10, but the member name
+        # 「2006年10月～2007年9月」 shows an October-start annual aggregate.
+        # Misreading it as monthly puts a year's deaths in one month (#33).
+        class_objs = [
+            _axis("time", "時間軸（年間）", ("2006001010", "2006年10月～2007年9月")),
+        ]
+        out = _layer_d(({"time": "2006001010", "value": "1084450"},), class_objs)
+        time = out[0]["time"]
+        assert time["granularity"] == "yearly"
+        assert time["normalized"] == "2006-10"  # start month, per #33 contract
+        assert time["label"] == "2006年10月～2007年9月"
 
     def test_time_detected_on_non_conventional_axis_id(self) -> None:
         # axis_id is cat03, but the classifier still reads it as `time`
