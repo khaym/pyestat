@@ -107,7 +107,7 @@ class MetaKey(_Strict):
 
 
 # The roles an `axis` id can pick among: those that resolve to an axis at
-# apply time (see ``apply._resolve_axis``). VALUE reads the observation cell
+# bind time (see ``apply._bind_axis``). VALUE reads the observation cell
 # and META_AXIS selects members with where/key, so neither honors `axis`.
 _AXIS_ADDRESSABLE_ROLES = frozenset(
     {AxisRole.TIME, AxisRole.AREA, AxisRole.CATEGORY}

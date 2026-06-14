@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 from collections import defaultdict
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from typing import Any, Literal
 
 from pyestat._endpoint import ClassObj
@@ -237,7 +238,10 @@ def apply_v2_rule(
         for col in rule.output
     ):
         return _apply_pivot(values, classification, rule, role_to_axes, class_objs, lookup)
-    plan = [(col.column, _resolve_source(col, role_to_axes, lookup)) for col in rule.output]
+    plan = [
+        (col.column, _resolve_source(_bind_axis(col, role_to_axes), lookup))
+        for col in rule.output
+    ]
     return tuple({column: read(row) for column, read in plan} for row in values)
 
 
@@ -273,40 +277,69 @@ def _apply_pivot(
     single cell to surface, and the fix — adding a ``key`` to split them into
     rows — is the author's, so the auto path routes it to Layer D.
     """
-    meta_axes = role_to_axes.get(AxisRole.META_AXIS, [])
-    if len(meta_axes) != 1:
-        raise RoleResolutionError(
-            role="meta-axis",
-            reason=f"pivot needs exactly one meta-axis, found {meta_axes or 'none'}",
-        )
-    meta_id = meta_axes[0]
-    if class_objs is None:
-        raise RoleResolutionError(
-            role="meta-axis",
-            reason="pivot needs class metadata to match `where` by member name",
-        )
-    members = {
-        c["code"]: c
-        for obj in class_objs
-        if obj.id == meta_id
-        for c in obj.classes
-        if "code" in c
-    }
-    # Three member→signal maps a `where` predicate reads. Parent is resolved to
-    # the parent member's *name* (the vocabulary `where: {parent}` speaks), so a
-    # measure family is selectable without naming each child.
-    name_by_code = {code: pivot_member_name(c) for code, c in members.items()}
-    parent_name_by_code = {
-        code: (name_by_code.get(c["parentCode"]) if c.get("parentCode") else None)
-        for code, c in members.items()
-    }
-    level_by_code = {code: str(c.get("level", "")) for code, c in members.items()}
+    plan = _plan_pivot(rule, classification, role_to_axes, class_objs, lookup)
+    out: list[dict[str, Any]] = []
+    for rows in _group_rows(values, plan.group_axis_ids).values():
+        base = {column: read(rows[0]) for column, read in plan.nonmeta_plan}
+        for grain, candidates in _subgroup_by_grain(rows, plan):
+            out.append(_build_record(base, grain, candidates, rows, plan))
+    return tuple(out)
 
+
+@dataclass(frozen=True)
+class _PivotPlan:
+    """Everything a pivot resolves once per call and threads to its per-group /
+    per-record steps: the single meta-axis id and its member index, the non-meta
+    grouping axes, and the three output-column plans (non-meta readers, ``key``
+    patterns, ``where`` measures). Grouping these keeps the step signatures
+    (:func:`_subgroup_by_grain`, :func:`_build_record`) about the *rows* they
+    fold, not the plan they fold against — and a new per-column plan dimension
+    is added here, not threaded through every signature.
+
+    ``where_plan`` tuples are ``(column, predicate, unit_predicate, transform,
+    on_ambiguous)``: the member selector, the optional ``unit_from`` selector,
+    the measure transform, and the error a multi-member match raises.
+    """
+
+    meta_id: str
+    index: _MemberIndex
+    group_axis_ids: list[str]
+    nonmeta_plan: list[tuple[str, Callable[[dict[str, Any]], Any]]]
+    key_plan: list[tuple[str, "re.Pattern[str]"]]
+    where_plan: list[
+        tuple[
+            str,
+            Callable[[Any], bool],
+            Callable[[Any], bool] | None,
+            Callable[[Any], Any],
+            Callable[[int], RoleResolutionError],
+        ]
+    ]
+
+
+def _plan_pivot(
+    rule: RuleV2,
+    classification: TableClassification,
+    role_to_axes: dict[AxisRole, list[str]],
+    class_objs: Sequence[ClassObj] | None,
+    lookup: dict[str, dict[str, str]],
+) -> _PivotPlan:
+    """Resolve everything a pivot needs once, before folding any rows: the
+    single meta-axis and its member index, the non-meta grouping axes, and the
+    non-meta / key / where output-column plans.
+
+    The typed :class:`RoleResolutionError`\\ s a malformed pivot rule earns (no
+    single meta-axis, missing metadata, an unaddressable non-meta role) fire
+    here at plan time, before row iteration — so the auto path routes them to
+    Layer D without having read a row.
+    """
+    meta_id, members = _resolve_meta_axis(role_to_axes, class_objs)
+    index = _build_member_index(members)
     group_axis_ids = [
         a.axis_id for a in classification.axes if a.role != AxisRole.META_AXIS
     ]
     nonmeta_plan = [
-        (col.column, _resolve_source(col, role_to_axes, lookup))
+        (col.column, _resolve_source(_bind_axis(col, role_to_axes), lookup))
         for col in rule.output
         if col.source.where is None and col.source.key is None
     ]
@@ -318,106 +351,154 @@ def _apply_pivot(
     where_plan = [
         (
             col.column,
-            _member_predicate(
-                col.source.where, name_by_code, parent_name_by_code, level_by_code
-            ),
+            _member_predicate(col.source.where, index),
             (
-                _member_predicate(
-                    col.source.unit_from,
-                    name_by_code,
-                    parent_name_by_code,
-                    level_by_code,
-                )
+                _member_predicate(col.source.unit_from, index)
                 if col.source.unit_from is not None
                 else None
             ),
             _resolve_transform(col.column, col.transform),
+            _where_ambiguity(col.column),
         )
         for col in rule.output
         if col.source.where is not None
     ]
+    return _PivotPlan(
+        meta_id, index, group_axis_ids, nonmeta_plan, key_plan, where_plan
+    )
 
-    def grain_of(row: dict[str, Any]) -> tuple:
-        """The derived-key tuple for a row, reading each `key` pattern against
-        the member's name. A pattern that does not match yields ``None`` for
-        that component — the member sits outside the derived grain (a level-1
-        total under a month key) and forms no row of its own.
 
-        The grain value is the first capture group, or the whole match when the
-        pattern declares none. A pattern *with* a group that did not participate
-        (an alternation/optional branch) falls back to the whole match too, so a
-        member whose name the pattern *did* match is never silently dropped for
-        an empty group."""
-        name = name_by_code.get(row.get(meta_id), "")
-        keys = []
-        for _, pattern in key_plan:
-            match = pattern.search(name)
-            if match is None:
-                keys.append(None)
-                continue
-            captured = match.group(1) if pattern.groups else match.group(0)
-            keys.append(captured if captured is not None else match.group(0))
-        return tuple(keys)
-
+def _group_rows(
+    values: tuple[dict[str, Any], ...],
+    group_axis_ids: Sequence[str],
+) -> dict[tuple, list[dict[str, Any]]]:
+    """Group rows by the codes of every non-meta axis — the records a pivot
+    folds into one row each (before any ``key`` splits a group by grain)."""
     groups: dict[tuple, list[dict[str, Any]]] = {}
     for row in values:
         key = tuple(row.get(aid) for aid in group_axis_ids)
         groups.setdefault(key, []).append(row)
+    return groups
 
-    out: list[dict[str, Any]] = []
-    for rows in groups.values():
-        base = {column: read(rows[0]) for column, read in nonmeta_plan}
-        if key_plan:
-            by_grain: dict[tuple, list[dict[str, Any]]] = {}
-            for row in rows:
-                grain = grain_of(row)
-                if any(value is None for value in grain):
-                    continue  # member outside the derived grain (e.g. a total)
-                by_grain.setdefault(grain, []).append(row)
-            grain_records = list(by_grain.items())
+
+def _grain_of(row: dict[str, Any], plan: _PivotPlan) -> tuple:
+    """The derived-key tuple for a row, reading each `key` pattern against the
+    member's name. A pattern that does not match yields ``None`` for that
+    component — the member sits outside the derived grain (a level-1 total under
+    a month key) and forms no row of its own.
+
+    The grain value is the first capture group, or the whole match when the
+    pattern declares none. A pattern *with* a group that did not participate (an
+    alternation/optional branch) falls back to the whole match too, so a member
+    whose name the pattern *did* match is never silently dropped for an empty
+    group.
+    """
+    name = plan.index.name_by_code.get(row.get(plan.meta_id), "")
+    keys = []
+    for _, pattern in plan.key_plan:
+        match = pattern.search(name)
+        if match is None:
+            keys.append(None)
+            continue
+        captured = match.group(1) if pattern.groups else match.group(0)
+        keys.append(captured if captured is not None else match.group(0))
+    return tuple(keys)
+
+
+def _subgroup_by_grain(
+    rows: list[dict[str, Any]], plan: _PivotPlan
+) -> list[tuple[tuple, list[dict[str, Any]]]]:
+    """Sub-group a non-meta group's rows by the grain a ``key`` derives,
+    dropping members outside the grain (a level-1 total under a month key).
+    Without a ``key`` the whole group is one grain-less record."""
+    if not plan.key_plan:
+        return [((), list(rows))]
+    by_grain: dict[tuple, list[dict[str, Any]]] = {}
+    for row in rows:
+        grain = _grain_of(row, plan)
+        if any(value is None for value in grain):
+            continue  # member outside the derived grain (e.g. a total)
+        by_grain.setdefault(grain, []).append(row)
+    return list(by_grain.items())
+
+
+def _build_record(
+    base: dict[str, Any],
+    grain: tuple,
+    candidates: list[dict[str, Any]],
+    group_rows: list[dict[str, Any]],
+    plan: _PivotPlan,
+) -> dict[str, Any]:
+    """Assemble one (group, grain) output record: the shared non-meta cells
+    (``base``), the derived-key columns, and each ``where`` measure.
+
+    A ``where`` selects its single member within ``candidates`` (the period
+    grain); ``unit_from`` (#39) reads the unit across ``group_rows`` (the whole
+    group), because the unit member (単位2) carries no period grain and so lives
+    outside ``candidates``. A ``where`` matching nothing leaves a stable ``None``
+    column (CPI's retired weight series) rather than dropping the record;
+    matching several distinct members is the author's ambiguity to split with a
+    ``key`` (routed to Layer D on the auto path).
+    """
+    record = dict(base)
+    for (column, _), value in zip(plan.key_plan, grain):
+        record[column] = value
+    for column, predicate, unit_predicate, transform, on_ambiguous in plan.where_plan:
+        row = _select_one_member(predicate, candidates, plan.meta_id, on_ambiguous)
+        if row is None:
+            record[column] = None
         else:
-            grain_records = [((), list(rows))]
-        for grain, candidates in grain_records:
-            record = dict(base)
-            for (column, _), value in zip(key_plan, grain):
-                record[column] = value
-            for column, predicate, unit_predicate, transform in where_plan:
-                matched = [r for r in candidates if predicate(r.get(meta_id))]
-                # Count *distinct* members, not rows: a member duplicated within
-                # one group (a malformed response, or an axis outside the role
-                # pattern) collapses to its first row — the pre-#37 graceful
-                # behavior — while several *different* members matching one
-                # predicate is the genuine ambiguity a `key` must split.
-                distinct = {r.get(meta_id) for r in matched}
-                if len(distinct) > 1:
-                    raise RoleResolutionError(
-                        role="meta-axis",
-                        reason=(
-                            f"the `where` for column {column!r} matched "
-                            f"{len(distinct)} distinct members in one record; a "
-                            "where selects a single member — add a `key` to "
-                            "split them into rows"
-                        ),
-                    )
-                if not matched:
-                    record[column] = None
-                else:
-                    row = matched[0]
-                    # `unit_from` (#39) overrides the value row's own @unit with
-                    # a grain-less member's value, read from the whole group
-                    # (`rows`) — the unit member (単位2) carries no period grain,
-                    # so it lives outside `candidates`. Absent it, the column
-                    # keeps its own @unit.
-                    unit = (
-                        _broadcast_unit(column, unit_predicate, rows, meta_id)
-                        if unit_predicate is not None
-                        else row.get("unit")
-                    )
-                    record[column] = measure(
-                        _apply_transform(transform, row.get("value")), unit
-                    )
-            out.append(record)
-    return tuple(out)
+            unit = (
+                _broadcast_unit(column, unit_predicate, group_rows, plan.meta_id)
+                if unit_predicate is not None
+                else row.get("unit")
+            )
+            record[column] = measure(_apply_transform(transform, row.get("value")), unit)
+    return record
+
+
+def _select_one_member(
+    predicate: Callable[[Any], bool],
+    pool: Sequence[dict[str, Any]],
+    meta_id: str,
+    on_ambiguous: Callable[[int], RoleResolutionError],
+) -> dict[str, Any] | None:
+    """The one meta member ``predicate`` selects within ``pool``, or ``None``
+    when it matches nothing.
+
+    Counts *distinct* members, not rows: a member duplicated within one pool (a
+    malformed response, or an axis outside the role pattern) collapses to its
+    first row — the pre-#37 graceful behavior — while several *different*
+    members matching one predicate is a genuine ambiguity the caller must
+    narrow, raised via ``on_ambiguous`` (the guidance differs by caller: a
+    ``where`` adds a ``key`` to split rows, a ``unit_from`` narrows its
+    selector).
+
+    ``pool`` is the caller's to choose: a ``where`` selects within the period
+    grain (``candidates``), a ``unit_from`` across the whole non-meta group
+    (``rows``), because the unit member carries no grain.
+    """
+    matched = [r for r in pool if predicate(r.get(meta_id))]
+    distinct = {r.get(meta_id) for r in matched}
+    if len(distinct) > 1:
+        raise on_ambiguous(len(distinct))
+    return matched[0] if matched else None
+
+
+def _where_ambiguity(column: str) -> Callable[[int], RoleResolutionError]:
+    """The error a ``where`` matching several distinct members raises. Built
+    once per column (with the plan), not per record, since it never fires on
+    the happy path: the fix — adding a ``key`` to split the members into rows —
+    is the author's, so the auto path routes it to Layer D."""
+    return lambda n: RoleResolutionError(
+        role="meta-axis",
+        reason=(
+            f"the `where` for column {column!r} matched "
+            f"{n} distinct members in one record; a "
+            "where selects a single member — add a `key` to "
+            "split them into rows"
+        ),
+    )
 
 
 def _broadcast_unit(
@@ -438,30 +519,93 @@ def _broadcast_unit(
     ``where`` matching nothing takes — while several *distinct* members is an
     ambiguity the author must narrow (mirrors the ``where`` multi-match error).
     """
-    matched = [r for r in pool if predicate(r.get(meta_id))]
-    distinct = {r.get(meta_id) for r in matched}
-    if len(distinct) > 1:
-        raise RoleResolutionError(
+    row = _select_one_member(
+        predicate,
+        pool,
+        meta_id,
+        lambda n: RoleResolutionError(
             role="meta-axis",
             reason=(
-                f"the `unit_from` for column {column!r} matched {len(distinct)} "
+                f"the `unit_from` for column {column!r} matched {n} "
                 "distinct members; a unit_from selects a single unit member — "
                 "narrow it (equals / parent / level)"
             ),
+        ),
+    )
+    return row.get("value") if row is not None else None
+
+
+@dataclass(frozen=True)
+class _MemberIndex:
+    """The three member→signal maps a ``where``/``key`` reads, keyed by member
+    code.
+
+    All names are NFKC-folded (via ``pivot_member_name``) so a selector and the
+    member it targets compare equal — the same fold the classifier used to
+    detect the meta-axis, so the two cannot drift. ``parent`` resolves to the
+    parent member's *name* (the vocabulary ``where: {parent}`` speaks), so a
+    measure family is selectable without naming each child; ``level`` is the raw
+    ``@level`` string.
+    """
+
+    name_by_code: dict[str, str]
+    parent_name_by_code: dict[str, str | None]
+    level_by_code: dict[str, str]
+
+
+def _resolve_meta_axis(
+    role_to_axes: dict[AxisRole, list[str]],
+    class_objs: Sequence[ClassObj] | None,
+) -> tuple[str, dict[str, dict[str, Any]]]:
+    """The single meta-axis id and its members-by-code for a pivot, or a typed
+    :class:`RoleResolutionError`.
+
+    A pivot folds exactly one meta-axis (#10/#37); zero or several is not
+    pivotable here, and ``where``/``key`` need class metadata to match members
+    by name.
+    """
+    meta_axes = role_to_axes.get(AxisRole.META_AXIS, [])
+    if len(meta_axes) != 1:
+        raise RoleResolutionError(
+            role="meta-axis",
+            reason=f"pivot needs exactly one meta-axis, found {meta_axes or 'none'}",
         )
-    return matched[0].get("value") if matched else None
+    meta_id = meta_axes[0]
+    if class_objs is None:
+        raise RoleResolutionError(
+            role="meta-axis",
+            reason="pivot needs class metadata to match `where` by member name",
+        )
+    members = {
+        c["code"]: c
+        for obj in class_objs
+        if obj.id == meta_id
+        for c in obj.classes
+        if "code" in c
+    }
+    return meta_id, members
+
+
+def _build_member_index(members: dict[str, dict[str, Any]]) -> _MemberIndex:
+    """Project the meta-axis members into the three signal maps a predicate
+    reads (see :class:`_MemberIndex`)."""
+    name_by_code = {code: pivot_member_name(c) for code, c in members.items()}
+    parent_name_by_code = {
+        code: (name_by_code.get(c["parentCode"]) if c.get("parentCode") else None)
+        for code, c in members.items()
+    }
+    level_by_code = {code: str(c.get("level", "")) for code, c in members.items()}
+    return _MemberIndex(name_by_code, parent_name_by_code, level_by_code)
 
 
 def _member_predicate(
     where: "MetaWhere",
-    name_by_code: dict[str, str],
-    parent_name_by_code: dict[str, str | None],
-    level_by_code: dict[str, str],
+    index: "_MemberIndex",
 ) -> Callable[[Any], bool]:
     """Compile a ``where`` into a predicate over a meta member's code: ``True``
     when the member satisfies *every* selector given (AND).
 
-    Names compare NFKC-folded (the maps already applied the fold the classifier
+    Names compare NFKC-folded (the index already applied the fold the classifier
     used, so a selector and the member it targets cannot drift); ``level``
     compares as the raw ``@level`` string. Each selector binds its target at
     definition so the closures do not share one loop variable.
@@ -469,15 +613,18 @@ def _member_predicate(
     checks: list[Callable[[Any], bool]] = []
     if where.equals is not None:
         checks.append(
-            lambda code, target=_norm(where.equals): name_by_code.get(code) == target
+            lambda code, target=_norm(where.equals): index.name_by_code.get(code)
+            == target
         )
     if where.parent is not None:
         checks.append(
-            lambda code, target=_norm(where.parent): parent_name_by_code.get(code)
+            lambda code, target=_norm(where.parent): index.parent_name_by_code.get(code)
             == target
         )
     if where.level is not None:
-        checks.append(lambda code, target=where.level: level_by_code.get(code) == target)
+        checks.append(
+            lambda code, target=where.level: index.level_by_code.get(code) == target
+        )
     return lambda code: all(check(code) for check in checks)
 
 
@@ -518,15 +665,75 @@ def _apply_transform(transform: Callable[[Any], Any], raw: Any) -> Any:
     return transform(raw) if raw is not None else raw
 
 
+@dataclass(frozen=True)
+class AxisBinding:
+    """A non-meta output column resolved to a concrete axis and its cell shape,
+    computed once before row iteration so the per-row reader never re-decides
+    role-vs-id (#38).
+
+    ``axis_id`` is ``None`` exactly for VALUE, which reads the observation cell
+    rather than an axis. META_AXIS never produces a binding — it flows through
+    the pivot's ``where``/``key`` path, not :func:`_bind_axis`.
+    """
+
+    column: str
+    role: AxisRole
+    axis_id: str | None
+    transform: str
+
+
+def _bind_axis(
+    col: OutputColumn, role_to_axes: dict[AxisRole, list[str]]
+) -> AxisBinding:
+    """Resolve one output column's ``source`` to an :class:`AxisBinding` up
+    front, owning the addressing rule the engine had split across role- and
+    id-based paths (#38).
+
+    A column names an axis id, or — naming none — falls back to the role's
+    single axis (:func:`_single_axis`, which rejects a role that is absent or
+    repeated). The named axis must actually carry the column's role; addressing
+    one that does not (a typo, or a role the table lacks) is a typed
+    :class:`RoleResolutionError` naming the axis, so the auto path routes to
+    Layer D rather than reading every row's missing cell as ``None``.
+
+    VALUE binds no axis — it reads the observation cell. A bare META_AXIS source
+    cannot bind to a single member, so it raises here; the pivot path handles
+    ``where`` columns before binding.
+    """
+    role = col.source.role
+    if role == AxisRole.META_AXIS:
+        raise RoleResolutionError(
+            role=role.value,
+            reason="a meta-axis output column needs a `where` predicate to select a member (#10)",
+        )
+    if role == AxisRole.VALUE:
+        return AxisBinding(col.column, role, None, col.transform)
+    if col.source.axis is None:
+        axis_id = _single_axis(role, role_to_axes)
+    else:
+        candidates = role_to_axes.get(role, [])
+        if col.source.axis not in candidates:
+            raise RoleResolutionError(
+                role=role.value,
+                reason=(
+                    f"column {col.column!r} addresses axis {col.source.axis!r}, but "
+                    f"it is not classified as {role.value} in this table "
+                    f"(axes with that role: {candidates or 'none'})"
+                ),
+            )
+        axis_id = col.source.axis
+    return AxisBinding(col.column, role, axis_id, col.transform)
+
+
 def _resolve_source(
-    col: OutputColumn,
-    role_to_axes: dict[AxisRole, list[str]],
+    binding: AxisBinding,
     lookup: dict[str, dict[str, str]],
 ) -> Callable[[dict[str, Any]], Any]:
-    """Bind one output column to a per-row reader that returns a *canonical
-    cell* (#35), resolved once per call.
+    """Bind one resolved column (:class:`AxisBinding`) to a per-row reader that
+    returns a *canonical cell* (#35).
 
-    The cell shape follows the column's role:
+    The cell shape follows the column's role (the axis it reads was already
+    resolved by :func:`_bind_axis`):
 
     * **VALUE** — a ``{value, unit}`` measure. The number is the observation
       cell (``value``), not an axis code — the classifier assigns VALUE to the
@@ -543,33 +750,24 @@ def _resolve_source(
     * **AREA / CATEGORY** — a ``{code, label}`` dimension. The label comes
       from the class metadata, falling back to the code. (#4 will add a
       standard-code field additively; today these are passthrough.)
-
-    A bare ``meta-axis`` source (no ``where``) cannot bind to a single
-    member, so it raises here; the pivot path handles ``where`` columns
-    before reaching this function.
     """
-    role = col.source.role
-    if role == AxisRole.META_AXIS:
-        raise RoleResolutionError(
-            role=role.value,
-            reason="a meta-axis output column needs a `where` predicate to select a member (#10)",
-        )
+    role = binding.role
     if role == AxisRole.VALUE:
-        transform = _resolve_transform(col.column, col.transform)
+        transform = _resolve_transform(binding.column, binding.transform)
 
         def read(row: dict[str, Any]) -> Any:
             return measure(_apply_transform(transform, row.get("value")), row.get("unit"))
 
         return read
 
-    axis_id = _resolve_axis(col, role_to_axes)
+    axis_id = binding.axis_id
     codes = lookup.get(axis_id, {})
     if role == AxisRole.TIME:
-        return _time_reader(col, axis_id, codes)
+        return _time_reader(binding, codes)
 
     # AREA / CATEGORY — passthrough dimension. Validate the transform name so a
     # typo still surfaces (#32); #4 will give area a standard-code field.
-    _validate_transform(col.column, col.transform)
+    _validate_transform(binding.column, binding.transform)
 
     def read(row: dict[str, Any]) -> Any:
         code = row.get(axis_id)
@@ -579,7 +777,7 @@ def _resolve_source(
 
 
 def _time_reader(
-    col: OutputColumn, axis_id: str, codes: dict[str, str]
+    binding: AxisBinding, codes: dict[str, str]
 ) -> Callable[[dict[str, Any]], Any]:
     """Bind a TIME column to a reader that builds a :func:`time_cell` from the
     column's declared format.
@@ -592,8 +790,9 @@ def _time_reader(
     shape mismatch becomes a :class:`TimeFormatError` — both routed by
     provenance on the auto path (Decision B).
     """
-    _validate_transform(col.column, col.transform)  # typo → UnknownTransformError, first
-    if col.transform == "best_effort_time":
+    _validate_transform(binding.column, binding.transform)  # typo → UnknownTransformError, first
+    axis_id = binding.axis_id
+    if binding.transform == "best_effort_time":
         # The total role-default is time_cell's auto-normalize, which
         # consults the member's display name — the only signal that
         # separates a year-span code from a month (#33). Dispatched here,
@@ -605,11 +804,11 @@ def _time_reader(
 
         return read_best_effort
 
-    parser = TIME_PARSERS.get(col.transform)
+    parser = TIME_PARSERS.get(binding.transform)
     if parser is None:
         raise TimeFormatError(
-            column=col.column,
-            transform=col.transform,
+            column=binding.column,
+            transform=binding.transform,
             reason=(
                 "not a time format; a time column must declare best_effort_time "
                 f"or a specific parser ({sorted(TIME_PARSERS)})"
@@ -625,44 +824,14 @@ def _time_reader(
             point = parser(code)
         except ValueError as exc:
             raise TimeFormatError(
-                column=col.column,
-                transform=col.transform,
+                column=binding.column,
+                transform=binding.transform,
                 code=code,
                 reason="code does not match the declared time format",
             ) from exc
         return time_cell(code, label, point)
 
     return read
-
-
-def _resolve_axis(
-    col: OutputColumn, role_to_axes: dict[AxisRole, list[str]]
-) -> str:
-    """The axis a non-meta column reads from: the one it names, or — when it
-    names none — the single axis of its role.
-
-    Id addressing (#38) is how a repeated non-meta role is resolved: 建築主 ×
-    用途 are two ``category`` axes, and each column names which one it draws
-    from. The named axis must actually carry the column's role; addressing one
-    that does not (a typo, or a role the table lacks) is a typed
-    :class:`RoleResolutionError` naming the axis, so the auto path routes to
-    Layer D rather than reading every row's missing cell as ``None``. With no
-    axis named, fall back to :func:`_single_axis` (the role must be unique).
-    """
-    role = col.source.role
-    if col.source.axis is None:
-        return _single_axis(role, role_to_axes)
-    candidates = role_to_axes.get(role, [])
-    if col.source.axis not in candidates:
-        raise RoleResolutionError(
-            role=role.value,
-            reason=(
-                f"column {col.column!r} addresses axis {col.source.axis!r}, but "
-                f"it is not classified as {role.value} in this table "
-                f"(axes with that role: {candidates or 'none'})"
-            ),
-        )
-    return col.source.axis
 
 
 def _single_axis(
@@ -673,7 +842,7 @@ def _single_axis(
     A role-addressed (no ``axis`` id) non-meta column must resolve to exactly
     one axis. Zero axes (a rule asking for a role the table lacks) and several
     axes (a repeated non-meta role, which is addressed by id instead — see
-    :func:`_resolve_axis`, #38) both fail as typed
+    :func:`_bind_axis`, #38) both fail as typed
     :class:`RoleResolutionError`\\ s so the auto path can route to Layer D.
     """
     axes = role_to_axes.get(role, [])

@@ -303,47 +303,22 @@ class EstatClient:
         values = tuple(v for p in pages for v in p.values)
         # Imported lazily so the (L3 → L2) dependency direction stays
         # one-way: the rule subsystem consumes ``ClassObj`` from this module.
-        from pyestat._engine.apply import apply_auto, apply_rule
+        # The pipeline owns the classify → aggregate → resolve → apply order
+        # and the Layer A–D routing; this method keeps only HTTP, paging, and
+        # response typing.
+        from pyestat._engine.pipeline import run_pipeline
 
-        # Classify once, with the *unfiltered* rows, so #27's data-driven
-        # meta-axis signal sees the whole table; the result feeds the aggregate
-        # selection (#36), resolution, v2 application, and the Layer D
-        # fallback. Computed when "auto" needs it or an aggregate selection
-        # does — raw mode with the default still never classifies.
-        classification = None
-        if rule == "auto" or aggregates != "include":
-            from pyestat._engine.classifier import classify
-
-            classification = classify(first.class_objs, first.table_inf, rows=values)
-
-        if aggregates != "include":
-            # Filter detail / aggregate rows before any rule runs, so every
-            # mode honors the selection and a downstream pivot folds only the
-            # chosen grain (#36).
-            from pyestat._engine.aggregate import select_rows
-
-            values = select_rows(values, classification, first.class_objs, aggregates)
-
-        if rule == "auto":
-            from pyestat._engine.resolver import resolve_v2
-
-            resolved = resolve_v2(
-                classification,
-                user=self._user_rules,
-                project=self._project_rules,
-                builtin=self._builtin_rules,
-                class_objs=first.class_objs,
-                stats_data_id=stats_data_id,
-            )
-            transformed = apply_auto(values, first.class_objs, classification, resolved)
-        else:
-            # raw (``None``) and the explicit modes classify lazily inside
-            # ``apply_rule`` only when needed; pass any classification already
-            # computed for the aggregate selection so it is not recomputed on
-            # the post-filter rows.
-            transformed = apply_rule(
-                values, first.class_objs, stats_data_id, rule, classification
-            )
+        transformed = run_pipeline(
+            values,
+            first.class_objs,
+            first.table_inf,
+            stats_data_id,
+            rule,
+            aggregates,
+            user_rules=self._user_rules,
+            project_rules=self._project_rules,
+            builtin_rules=self._builtin_rules,
+        )
         return StatsDataResponse(
             stats_data_id=stats_data_id,
             total_number=first.total_number,
