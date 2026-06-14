@@ -139,6 +139,111 @@ class TestPivotWhereSchema:
                 ],
             ))
 
+    def test_parent_and_level_selectors_parse(self) -> None:
+        # #37 widens `where` beyond name equality: a trade rule selects a
+        # measure family by its parent member's name (合計_金額) and a depth
+        # by @level — neither is expressible as an `equals`. Both coexist
+        # with `equals` and are combined as AND when several are given.
+        rule = RuleV2.model_validate(_long(
+            match={"role_pattern": ["meta-axis", "time"]},
+            output=[
+                {"column": "time", "source": {"role": "time"}, "transform": "yearly"},
+                {"column": "amount",
+                 "source": {"role": "meta-axis",
+                            "where": {"parent": "合計_金額", "level": "2"}}},
+            ],
+        ))
+        where = rule.output[1].source.where
+        assert where is not None
+        assert where.parent == "合計_金額"
+        assert where.level == "2"
+        assert where.equals is None
+
+    def test_empty_where_predicate_rejected(self) -> None:
+        # A `where: {}` with no selector would match every member (or none) —
+        # an authoring slip that must fail loud, not silently pick.
+        with pytest.raises(ValidationError, match="at least one"):
+            RuleV2.model_validate(_long(
+                match={"role_pattern": ["meta-axis", "time"]},
+                output=[
+                    {"column": "time", "source": {"role": "time"}, "transform": "yearly"},
+                    {"column": "x", "source": {"role": "meta-axis", "where": {}}},
+                ],
+            ))
+
+
+class TestPivotKeySchema:
+    """The ``key`` selector (#37) derives a grain dimension from a meta-axis
+    member's name via a regex, so a measure×period cross folds without naming
+    every member. Like ``where`` it is valid only on a ``meta-axis`` source,
+    and a column is *either* a grain key *or* a value selector, never both."""
+
+    def test_key_selector_parses_on_meta_axis_source(self) -> None:
+        rule = RuleV2.model_validate(_long(
+            match={"role_pattern": ["meta-axis", "time"]},
+            output=[
+                {"column": "time", "source": {"role": "time"}, "transform": "yearly"},
+                {"column": "month",
+                 "source": {"role": "meta-axis", "key": {"pattern": r"^(\d{1,2}月)_"}}},
+            ],
+        ))
+        source = rule.output[1].source
+        assert source is not None
+        assert source.key is not None
+        assert source.key.pattern == r"^(\d{1,2}月)_"
+
+    def test_key_on_non_meta_axis_source_rejected(self) -> None:
+        # A grain key reads meta-axis member names; on a time/area source there
+        # is nothing to pattern-match, so it is an authoring error.
+        with pytest.raises(ValidationError, match="meta-axis"):
+            RuleV2.model_validate(_long(output=[
+                {"column": "time",
+                 "source": {"role": "time", "key": {"pattern": "(.+)"}},
+                 "transform": "yearly"},
+            ]))
+
+    def test_key_and_where_on_one_source_rejected(self) -> None:
+        # The two have opposite jobs — key adds a grain row, where picks a
+        # value within it — so one column cannot be both. Fail loud rather
+        # than guess which wins.
+        with pytest.raises(ValidationError, match="key.*where|where.*key"):
+            RuleV2.model_validate(_long(
+                match={"role_pattern": ["meta-axis", "time"]},
+                output=[
+                    {"column": "time", "source": {"role": "time"}, "transform": "yearly"},
+                    {"column": "x",
+                     "source": {"role": "meta-axis",
+                                "where": {"equals": "合計_金額"},
+                                "key": {"pattern": "(.+)"}}},
+                ],
+            ))
+
+    def test_unknown_key_field_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            RuleV2.model_validate(_long(
+                match={"role_pattern": ["meta-axis", "time"]},
+                output=[
+                    {"column": "time", "source": {"role": "time"}, "transform": "yearly"},
+                    {"column": "x",
+                     "source": {"role": "meta-axis", "key": {"regex": "(.+)"}}},
+                ],
+            ))
+
+    def test_malformed_key_pattern_rejected_at_load(self) -> None:
+        # A bad regex is an authoring error caught loud at load — the same
+        # fail-fast stance as a misspelled field. Validating at the schema
+        # keeps an uncompilable pattern from reaching the apply path, where a
+        # raw re.error would dodge the auto path's typed-error routing.
+        with pytest.raises(ValidationError, match="valid regex"):
+            RuleV2.model_validate(_long(
+                match={"role_pattern": ["meta-axis", "time"]},
+                output=[
+                    {"column": "time", "source": {"role": "time"}, "transform": "yearly"},
+                    {"column": "x",
+                     "source": {"role": "meta-axis", "key": {"pattern": "(unbalanced"}}},
+                ],
+            ))
+
 
 class TestShortFormExpansion:
     def test_unspecified_transform_falls_back_to_role_default(self) -> None:

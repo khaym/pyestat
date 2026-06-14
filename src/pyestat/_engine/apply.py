@@ -7,6 +7,7 @@ here without needing this module to know its result type).
 """
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 from collections.abc import Callable, Sequence
 from typing import Any, Literal
@@ -23,7 +24,7 @@ from pyestat._engine.classifier import (
 from pyestat._engine.registry import RegistryKeyError
 from pyestat._engine.resolver import ResolvedRule
 from pyestat._engine.role_defaults import TIME_PARSERS, TRANSFORMS, expand_short_form
-from pyestat._engine.rule import OutputColumn, RuleV2
+from pyestat._engine.rule import MetaWhere, OutputColumn, RuleV2
 from pyestat.errors import (
     RoleResolutionError,
     RuleAuthoringError,
@@ -231,7 +232,10 @@ def apply_v2_rule(
     for axis in classification.axes:
         role_to_axes[axis.role].append(axis.axis_id)
     lookup = _label_lookup(class_objs)
-    if any(col.source.where is not None for col in rule.output):
+    if any(
+        col.source.where is not None or col.source.key is not None
+        for col in rule.output
+    ):
         return _apply_pivot(values, classification, rule, role_to_axes, class_objs, lookup)
     plan = [(col.column, _resolve_source(col, role_to_axes, lookup)) for col in rule.output]
     return tuple({column: read(row) for column, read in plan} for row in values)
@@ -245,17 +249,29 @@ def _apply_pivot(
     class_objs: Sequence[ClassObj] | None,
     lookup: dict[str, dict[str, str]],
 ) -> tuple[dict[str, Any], ...]:
-    """Fold meta-axis-spread rows into one record per non-meta group (#10).
+    """Fold meta-axis-spread rows into one record per non-meta group, plus any
+    grain a ``key`` derives (#10, #37).
 
-    Groups ``values`` by the codes of every non-meta axis, then for each
-    group emits one row: non-meta columns read the group's shared codes as
-    canonical cells (#35), and each ``where`` column selects the member whose
-    (NFKC-normalized) name matches and surfaces its cell as a ``{value, unit}``
-    measure — carrying *that member's own* unit, so two measures with
-    different units (trade's 数量 in ＮＯ vs 金額 in 千円) stay correct. A
-    member absent from the group yields ``None`` (not a measure), so a dropped
-    measure (e.g. CPI's retired weight series) leaves a stable column rather
-    than dropping the record.
+    Groups ``values`` by the codes of every non-meta axis. A ``key`` column
+    (#37) lifts a value out of each member's *name* (the trade cross encodes
+    the month only there, e.g. ``"1月_金額"``) and adds it to the grain, so one
+    group can emit several rows — one per derived key. Within each
+    (group, grain) record:
+
+    * non-meta columns read the group's shared codes as canonical cells (#35);
+    * a ``key`` column emits its derived value;
+    * each ``where`` column **filters** the members of that record to the one
+      matching its predicate (name / parent name / level — AND) and surfaces
+      that member's cell as a ``{value, unit}`` measure, carrying *that
+      member's own* unit so two measures with different units (trade's 数量 in
+      ＮＯ vs 金額 in 千円) stay correct.
+
+    A ``where`` matching no member yields ``None`` (not a measure), so a
+    dropped measure (CPI's retired weight series) leaves a stable column rather
+    than dropping the record. A ``where`` matching *several* members in one
+    record is an authoring error (:class:`RoleResolutionError`): there is no
+    single cell to surface, and the fix — adding a ``key`` to split them into
+    rows — is the author's, so the auto path routes it to Layer D.
     """
     meta_axes = role_to_axes.get(AxisRole.META_AXIS, [])
     if len(meta_axes) != 1:
@@ -269,30 +285,69 @@ def _apply_pivot(
             role="meta-axis",
             reason="pivot needs class metadata to match `where` by member name",
         )
-    name_by_code = {
-        c["code"]: pivot_member_name(c)
+    members = {
+        c["code"]: c
         for obj in class_objs
         if obj.id == meta_id
         for c in obj.classes
         if "code" in c
     }
+    # Three member→signal maps a `where` predicate reads. Parent is resolved to
+    # the parent member's *name* (the vocabulary `where: {parent}` speaks), so a
+    # measure family is selectable without naming each child.
+    name_by_code = {code: pivot_member_name(c) for code, c in members.items()}
+    parent_name_by_code = {
+        code: (name_by_code.get(c["parentCode"]) if c.get("parentCode") else None)
+        for code, c in members.items()
+    }
+    level_by_code = {code: str(c.get("level", "")) for code, c in members.items()}
+
     group_axis_ids = [
         a.axis_id for a in classification.axes if a.role != AxisRole.META_AXIS
     ]
     nonmeta_plan = [
         (col.column, _resolve_source(col, role_to_axes, lookup))
         for col in rule.output
-        if col.source.where is None
+        if col.source.where is None and col.source.key is None
     ]
-    meta_plan = [
+    key_plan = [
+        (col.column, re.compile(col.source.key.pattern))
+        for col in rule.output
+        if col.source.key is not None
+    ]
+    where_plan = [
         (
             col.column,
-            _norm(col.source.where.equals),
+            _member_predicate(
+                col.source.where, name_by_code, parent_name_by_code, level_by_code
+            ),
             _resolve_transform(col.column, col.transform),
         )
         for col in rule.output
         if col.source.where is not None
     ]
+
+    def grain_of(row: dict[str, Any]) -> tuple:
+        """The derived-key tuple for a row, reading each `key` pattern against
+        the member's name. A pattern that does not match yields ``None`` for
+        that component — the member sits outside the derived grain (a level-1
+        total under a month key) and forms no row of its own.
+
+        The grain value is the first capture group, or the whole match when the
+        pattern declares none. A pattern *with* a group that did not participate
+        (an alternation/optional branch) falls back to the whole match too, so a
+        member whose name the pattern *did* match is never silently dropped for
+        an empty group."""
+        name = name_by_code.get(row.get(meta_id), "")
+        keys = []
+        for _, pattern in key_plan:
+            match = pattern.search(name)
+            if match is None:
+                keys.append(None)
+                continue
+            captured = match.group(1) if pattern.groups else match.group(0)
+            keys.append(captured if captured is not None else match.group(0))
+        return tuple(keys)
 
     groups: dict[tuple, list[dict[str, Any]]] = {}
     for row in values:
@@ -301,24 +356,77 @@ def _apply_pivot(
 
     out: list[dict[str, Any]] = []
     for rows in groups.values():
-        rep = rows[0]
-        record = {column: read(rep) for column, read in nonmeta_plan}
-        # Keep each selected member's value *and* its own unit, so a pivoted
-        # measure column carries the right unit (they differ across measures).
-        cell_by_name: dict[str, tuple[Any, Any]] = {}
-        for row in rows:
-            name = name_by_code.get(row.get(meta_id))
-            if name is not None and name not in cell_by_name:
-                cell_by_name[name] = (row.get("value"), row.get("unit"))
-        for column, target, transform in meta_plan:
-            cell = cell_by_name.get(target)
-            if cell is None:
-                record[column] = None
-            else:
-                raw, unit = cell
-                record[column] = measure(_apply_transform(transform, raw), unit)
-        out.append(record)
+        base = {column: read(rows[0]) for column, read in nonmeta_plan}
+        if key_plan:
+            by_grain: dict[tuple, list[dict[str, Any]]] = {}
+            for row in rows:
+                grain = grain_of(row)
+                if any(value is None for value in grain):
+                    continue  # member outside the derived grain (e.g. a total)
+                by_grain.setdefault(grain, []).append(row)
+            grain_records = list(by_grain.items())
+        else:
+            grain_records = [((), list(rows))]
+        for grain, candidates in grain_records:
+            record = dict(base)
+            for (column, _), value in zip(key_plan, grain):
+                record[column] = value
+            for column, predicate, transform in where_plan:
+                matched = [r for r in candidates if predicate(r.get(meta_id))]
+                # Count *distinct* members, not rows: a member duplicated within
+                # one group (a malformed response, or an axis outside the role
+                # pattern) collapses to its first row — the pre-#37 graceful
+                # behavior — while several *different* members matching one
+                # predicate is the genuine ambiguity a `key` must split.
+                distinct = {r.get(meta_id) for r in matched}
+                if len(distinct) > 1:
+                    raise RoleResolutionError(
+                        role="meta-axis",
+                        reason=(
+                            f"the `where` for column {column!r} matched "
+                            f"{len(distinct)} distinct members in one record; a "
+                            "where selects a single member — add a `key` to "
+                            "split them into rows"
+                        ),
+                    )
+                if not matched:
+                    record[column] = None
+                else:
+                    row = matched[0]
+                    record[column] = measure(
+                        _apply_transform(transform, row.get("value")), row.get("unit")
+                    )
+            out.append(record)
     return tuple(out)
+
+
+def _member_predicate(
+    where: "MetaWhere",
+    name_by_code: dict[str, str],
+    parent_name_by_code: dict[str, str | None],
+    level_by_code: dict[str, str],
+) -> Callable[[Any], bool]:
+    """Compile a ``where`` into a predicate over a meta member's code: ``True``
+    when the member satisfies *every* selector given (AND).
+
+    Names compare NFKC-folded (the maps already applied the fold the classifier
+    used, so a selector and the member it targets cannot drift); ``level``
+    compares as the raw ``@level`` string. Each selector binds its target at
+    definition so the closures do not share one loop variable.
+    """
+    checks: list[Callable[[Any], bool]] = []
+    if where.equals is not None:
+        checks.append(
+            lambda code, target=_norm(where.equals): name_by_code.get(code) == target
+        )
+    if where.parent is not None:
+        checks.append(
+            lambda code, target=_norm(where.parent): parent_name_by_code.get(code)
+            == target
+        )
+    if where.level is not None:
+        checks.append(lambda code, target=where.level: level_by_code.get(code) == target)
+    return lambda code: all(check(code) for check in checks)
 
 
 def _resolve_transform(column: str, name: str) -> Callable[[Any], Any]:

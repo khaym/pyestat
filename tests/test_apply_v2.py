@@ -495,3 +495,172 @@ class TestApplyV2Pivot:
         out = apply_v2_rule(rows, _PIVOT_CLASSIFICATION, rule, class_objs=class_objs)
         assert out[0]["quantity"] == {"value": "16", "unit": "ＮＯ"}
         assert out[0]["amount"] == {"value": "35220", "unit": "千円"}
+
+
+# A trade measure×period cross (#37): cat02 folds *two* dimensions into one
+# axis — a measure family (合計_数量2 / 合計_金額, level 1) and the month
+# (level 2, linked to its family by @parentCode). The month identity lives
+# only in the member *name* ("1月_金額"), not in any code, so a rule derives
+# it with a `key` pattern and selects the measure family with a `where`
+# parent predicate — neither expressible by name-equality alone.
+def _hier_classobj(axis_id: str, members: list[dict]) -> ClassObj:
+    """A ClassObj from full CLASS dicts (code/name/level/parentCode/unit),
+    so a pivot rule can match on parent and depth, not just the name."""
+    return ClassObj(id=axis_id, name=axis_id, classes=tuple(members))
+
+
+_CROSS_CLASSIFICATION = TableClassification((
+    _axis("cat01", AxisRole.CATEGORY),
+    _axis("cat02", AxisRole.META_AXIS),
+    _axis("area", AxisRole.AREA),
+    _axis("time", AxisRole.TIME),
+))
+_CROSS_CLASS_OBJS = (
+    _hier_classobj("cat02", [
+        {"code": "130", "name": "合計_数量2", "level": "1"},
+        {"code": "140", "name": "合計_金額", "level": "1", "unit": "千円"},
+        {"code": "160", "name": "1月_数量2", "level": "2", "parentCode": "130"},
+        {"code": "170", "name": "1月_金額", "level": "2", "parentCode": "140", "unit": "千円"},
+        {"code": "190", "name": "2月_数量2", "level": "2", "parentCode": "130"},
+        {"code": "200", "name": "2月_金額", "level": "2", "parentCode": "140", "unit": "千円"},
+    ]),
+)
+# One logical record (cat01=0101, area=50103, time=2026) spread across the six
+# level-2 members; the two level-1 totals are present too (a real table ships
+# both), to prove they do not leak into the per-month rows.
+_CROSS_ROWS = (
+    {"cat01": "0101", "cat02": "130", "area": "50103", "time": "2026000000", "value": "13"},
+    {"cat01": "0101", "cat02": "140", "area": "50103", "time": "2026000000", "value": "76300", "unit": "千円"},
+    {"cat01": "0101", "cat02": "160", "area": "50103", "time": "2026000000", "value": "6"},
+    {"cat01": "0101", "cat02": "170", "area": "50103", "time": "2026000000", "value": "35220", "unit": "千円"},
+    {"cat01": "0101", "cat02": "190", "area": "50103", "time": "2026000000", "value": "7"},
+    {"cat01": "0101", "cat02": "200", "area": "50103", "time": "2026000000", "value": "41080", "unit": "千円"},
+)
+
+
+def _cross_rule(output: list[dict]) -> RuleV2:
+    return RuleV2.model_validate({
+        "schema_version": "2",
+        "match": {"role_pattern": ["category", "meta-axis", "area", "time"]},
+        "output": output,
+    })
+
+
+class TestApplyV2DerivedGrain:
+    """``key`` derives a grain dimension from member names (#37): the
+    measure×period cross folds into one row per (group, derived key), with
+    `where` selecting each measure within that row — no member enumeration."""
+
+    def test_month_rows_by_measure_columns(self) -> None:
+        # The core Done: 6 spread rows → 2 month rows, each carrying the
+        # quantity and amount for that month. `key` puts the month (read from
+        # the member name) into the grain; `where` parent picks the measure
+        # family. No member name is enumerated in the rule.
+        rule = _cross_rule([
+            {"column": "commodity", "source": {"role": "category"}, "transform": "passthrough"},
+            {"column": "time", "source": {"role": "time"}, "transform": "yearly"},
+            {"column": "month",
+             "source": {"role": "meta-axis", "key": {"pattern": r"^(\d{1,2}月)_"}}},
+            {"column": "quantity",
+             "source": {"role": "meta-axis", "where": {"parent": "合計_数量2"}}},
+            {"column": "amount",
+             "source": {"role": "meta-axis", "where": {"parent": "合計_金額"}}},
+        ])
+        out = apply_v2_rule(_CROSS_ROWS, _CROSS_CLASSIFICATION, rule, class_objs=_CROSS_CLASS_OBJS)
+        assert out == (
+            {
+                "commodity": {"code": "0101", "label": "0101"},
+                "time": {"code": "2026000000", "label": "2026000000",
+                         "normalized": "2026", "granularity": "yearly"},
+                "month": "1月",
+                "quantity": {"value": "6", "unit": None},
+                "amount": {"value": "35220", "unit": "千円"},
+            },
+            {
+                "commodity": {"code": "0101", "label": "0101"},
+                "time": {"code": "2026000000", "label": "2026000000",
+                         "normalized": "2026", "granularity": "yearly"},
+                "month": "2月",
+                "quantity": {"value": "7", "unit": None},
+                "amount": {"value": "41080", "unit": "千円"},
+            },
+        )
+
+    def test_where_parent_selects_one_member_within_the_grain(self) -> None:
+        # Across the group, parent=合計_金額 matches both 1月_金額 and 2月_金額;
+        # the grain (month) narrows it to exactly one per row. This is what
+        # makes a multi-member parent predicate unambiguous.
+        rule = _cross_rule([
+            {"column": "month",
+             "source": {"role": "meta-axis", "key": {"pattern": r"^(\d{1,2}月)_"}}},
+            {"column": "amount",
+             "source": {"role": "meta-axis", "where": {"parent": "合計_金額"}}},
+        ])
+        out = apply_v2_rule(_CROSS_ROWS, _CROSS_CLASSIFICATION, rule, class_objs=_CROSS_CLASS_OBJS)
+        assert {r["month"]: r["amount"]["value"] for r in out} == {"1月": "35220", "2月": "41080"}
+
+    def test_where_matching_several_members_without_a_key_raises(self) -> None:
+        # `where: {level: "2"}` matches all six level-2 members of the group;
+        # with no key to split them into rows there is no single cell to
+        # surface, so fail loud (the author must add a key) rather than pick
+        # an arbitrary member.
+        rule = _cross_rule([
+            {"column": "time", "source": {"role": "time"}, "transform": "yearly"},
+            {"column": "x", "source": {"role": "meta-axis", "where": {"level": "2"}}},
+        ])
+        with pytest.raises(RoleResolutionError, match="matched"):
+            apply_v2_rule(_CROSS_ROWS, _CROSS_CLASSIFICATION, rule, class_objs=_CROSS_CLASS_OBJS)
+
+    def test_where_matching_several_members_within_one_grain_raises(self) -> None:
+        # Even with a key, a predicate that stays ambiguous *inside* a grain
+        # cell (level "2" still matches 数量2 and 金額 for one month) fails —
+        # the grain must resolve the where to exactly one member.
+        rule = _cross_rule([
+            {"column": "month",
+             "source": {"role": "meta-axis", "key": {"pattern": r"^(\d{1,2}月)_"}}},
+            {"column": "x", "source": {"role": "meta-axis", "where": {"level": "2"}}},
+        ])
+        with pytest.raises(RoleResolutionError, match="matched"):
+            apply_v2_rule(_CROSS_ROWS, _CROSS_CLASSIFICATION, rule, class_objs=_CROSS_CLASS_OBJS)
+
+    def test_key_pattern_without_a_capture_group_uses_the_whole_match(self) -> None:
+        # The grain value is the first capture group, or — when the pattern
+        # declares none — the whole match. An author may write the simpler
+        # group-less form and still get a usable key.
+        rule = _cross_rule([
+            {"column": "month", "source": {"role": "meta-axis", "key": {"pattern": r"\d{1,2}月"}}},
+            {"column": "amount", "source": {"role": "meta-axis", "where": {"parent": "合計_金額"}}},
+        ])
+        out = apply_v2_rule(_CROSS_ROWS, _CROSS_CLASSIFICATION, rule, class_objs=_CROSS_CLASS_OBJS)
+        assert {r["month"] for r in out} == {"1月", "2月"}
+
+    def test_duplicate_rows_of_one_member_in_a_group_take_the_first(self) -> None:
+        # A member duplicated within one group (a malformed response, or an
+        # axis outside the role pattern) must not be mistaken for the #37
+        # ambiguity of *several* members matching one predicate: it collapses
+        # to its first row (the pre-#37 graceful behavior), not an error.
+        class_objs = (_classobj("cat02", [("140", "合計_金額")]),)
+        rows = (
+            {"cat01": "X", "cat02": "140", "area": "50103", "time": "2005000000", "value": "100"},
+            {"cat01": "X", "cat02": "140", "area": "50103", "time": "2005000000", "value": "999"},
+        )
+        rule = _pivot_rule([
+            {"column": "amount", "source": {"role": "meta-axis", "where": {"equals": "合計_金額"}}},
+        ])
+        out = apply_v2_rule(rows, _PIVOT_CLASSIFICATION, rule, class_objs=class_objs)
+        assert len(out) == 1
+        assert out[0]["amount"]["value"] == "100"
+
+    def test_level_and_parent_combine_as_and(self) -> None:
+        # Several selectors on one `where` narrow together: level "1" AND
+        # parent ... no — a level-1 member has no parent. Use level "2" AND
+        # parent 合計_金額 to confirm the AND reaches the same single member
+        # the parent alone would (the level clause does not exclude it).
+        rule = _cross_rule([
+            {"column": "month",
+             "source": {"role": "meta-axis", "key": {"pattern": r"^(\d{1,2}月)_"}}},
+            {"column": "amount",
+             "source": {"role": "meta-axis", "where": {"parent": "合計_金額", "level": "2"}}},
+        ])
+        out = apply_v2_rule(_CROSS_ROWS, _CROSS_CLASSIFICATION, rule, class_objs=_CROSS_CLASS_OBJS)
+        assert {r["month"]: r["amount"]["value"] for r in out} == {"1月": "35220", "2月": "41080"}

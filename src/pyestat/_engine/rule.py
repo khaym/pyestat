@@ -16,6 +16,7 @@ table context.
 """
 from __future__ import annotations
 
+import re
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, model_validator
@@ -43,38 +44,107 @@ class _Strict(BaseModel):
 
 
 class MetaWhere(_Strict):
-    """Selects one meta-axis member for a pivot column (#10).
+    """Selects meta-axis members for a pivot column by their properties.
 
-    MVP supports equality against the member *name* (NFKC-normalized at
-    apply time): an author writes the semantic label (e.g. ``"合計_金額"``),
-    not the opaque, table-specific member code. Modeled as an object rather
-    than a bare string so future selectors (member code, set membership)
-    are additive and leave existing rules valid.
+    A predicate over a member's metadata, combined as **AND** when several
+    fields are given. All three are matched against signals an author can
+    read in the metadata, never the opaque table-specific code:
+
+    * ``equals`` — the member's own *name* (#10).
+    * ``parent`` — its parent member's *name* (#37). The trade cross
+      (``cat02``) groups months under a measure family (``合計_金額``); a
+      family is selectable only by the parent's name, not by any one
+      member's.
+    * ``level`` — the member's ``@level`` depth, as a string.
+
+    Names are NFKC-normalized at apply time, so an author writes the semantic
+    label (``"合計_金額"``) regardless of width drift. At least one selector
+    must be present — an empty predicate would match everything (or nothing)
+    and is an authoring slip. As a pure filter ``where`` never changes the
+    output grain; ``key`` does that.
     """
 
-    equals: str
+    equals: str | None = None
+    parent: str | None = None
+    level: str | None = None
+
+    @model_validator(mode="after")
+    def _at_least_one_selector(self) -> "MetaWhere":
+        if self.equals is None and self.parent is None and self.level is None:
+            raise ValueError(
+                "a `where` predicate needs at least one selector "
+                "(equals / parent / level)"
+            )
+        return self
+
+
+class MetaKey(_Strict):
+    """Derives a grain dimension from a meta-axis member's name (#37).
+
+    ``pattern`` is a regex run against the member's NFKC-normalized name; its
+    first capture group (or the whole match if it has none) becomes the
+    column's value and **participates in the output grain** — the SQL analogue
+    is a derived ``GROUP BY`` column. This is how a measure×period cross folds
+    without enumerating members: the period (e.g. the month in ``"1月_金額"``)
+    lives only in the name, not in any code, so a pattern lifts it into a
+    row dimension that ``where`` columns are then resolved within.
+    """
+
+    pattern: str
+
+    @model_validator(mode="after")
+    def _pattern_compiles(self) -> "MetaKey":
+        """A malformed regex is an authoring error, caught loud at load — the
+        same fail-fast stance as a misspelled field. Validating here means the
+        apply path never meets an uncompilable pattern, so a ``re.error`` can
+        never escape it untyped (which would dodge the auto path's
+        provenance routing — see ``apply._apply_pivot``)."""
+        try:
+            re.compile(self.pattern)
+        except re.error as exc:
+            raise ValueError(f"`key.pattern` is not a valid regex: {exc}") from exc
+        return self
 
 
 class RoleSource(_Strict):
     """Where a v2 output column draws its value from: an axis *role*.
 
     ``role`` reuses the classifier's :class:`AxisRole` vocabulary so a
-    rule and the classifier speak the same language. A ``where`` predicate
-    turns a ``meta-axis`` role into a pivot (#10): rows are folded by the
-    non-meta axes and the predicate picks which member's cell this column
-    receives. ``where`` is valid only on a ``meta-axis`` source; on any
-    other role a referenced role must resolve to exactly one axis.
+    rule and the classifier speak the same language. On a ``meta-axis`` role
+    one of two pivot modifiers may appear (never both on one column — they
+    have opposite jobs):
+
+    * ``where`` — a filter (#10/#37): rows are folded by the non-meta axes
+      (and any ``key`` grain) and the predicate picks which member's cell
+      this column receives.
+    * ``key`` — a grain dimension (#37): the column's value is derived from
+      the member name and adds a row dimension to fold the cross around.
+
+    Both are valid only on a ``meta-axis`` source; on any other role a
+    referenced role must resolve to exactly one axis.
     """
 
     role: AxisRole
     where: MetaWhere | None = None
+    key: MetaKey | None = None
 
     @model_validator(mode="after")
-    def _where_requires_meta_axis(self) -> "RoleSource":
+    def _pivot_modifiers_require_meta_axis(self) -> "RoleSource":
         if self.where is not None and self.role != AxisRole.META_AXIS:
             raise ValueError(
                 "a `where` predicate is only valid on a meta-axis source "
                 f"(got role={self.role.value})"
+            )
+        if self.key is not None and self.role != AxisRole.META_AXIS:
+            raise ValueError(
+                "a `key` selector is only valid on a meta-axis source "
+                f"(got role={self.role.value})"
+            )
+        if self.where is not None and self.key is not None:
+            raise ValueError(
+                "a column cannot carry both `where` and `key`: `where` selects "
+                "a value, `key` derives a grain dimension — split them into two "
+                "columns"
             )
         return self
 
