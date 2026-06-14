@@ -121,11 +121,12 @@ class TestBuildGenericRule:
     declines (``None``) when the table cannot be structured generically and
     must route to Layer D.
 
-    Business rule: Layer A only handles tables where every axis carries a
-    distinct, directly-addressable role. A meta-axis (needs the #10 pivot),
-    an ``unknown`` axis (the classifier's route-to-D sentinel), or a role
-    that repeats across axes (disambiguating needs #10's where-predicate)
-    each make the table ineligible, so it rides Layer D instead.
+    Business rule: Layer A structures any table whose axes it can address. A
+    role that repeats across axes (建築主 × 用途) is no longer a blocker (#38) —
+    each axis gets its own id-addressed column. A meta-axis is handled by the
+    pivot path (see TestBuildGenericPivot); only an ``unknown`` axis (the
+    classifier's route-to-D sentinel) or a column-name collision still makes a
+    table ineligible, so it rides Layer D instead.
     """
 
     def test_clean_single_axis_table_yields_one_column_per_axis(self) -> None:
@@ -187,16 +188,51 @@ class TestBuildGenericRule:
         ))
         assert build_generic_rule(clf) is None
 
-    def test_repeated_role_declines(self) -> None:
-        # Population's age + sex are two category axes; picking which column
-        # reads which needs #10's where-predicate, so Layer A declines.
+    def test_repeated_role_yields_one_axis_addressed_column_each(self) -> None:
+        # #38: 賃金 (職種 × 企業規模) and the like carry two category axes. Each
+        # becomes its own column, addressed by axis id — the value column reads
+        # the observation, the rest read their own axis. (Before #38 this whole
+        # table declined to Layer D for want of a way to tell the two apart.)
         clf = TableClassification((
             _axis("time", AxisRole.TIME),
             _axis("cat01", AxisRole.CATEGORY),
             _axis("cat03", AxisRole.CATEGORY),
             _axis("tab", AxisRole.VALUE),
         ))
-        assert build_generic_rule(clf) is None
+        rule = build_generic_rule(clf)
+        assert rule is not None
+        cols = {c.column: c for c in rule.output}
+        assert set(cols) == {"time", "cat01", "cat03", "value"}
+        # The two same-role categories are disambiguated by axis id, so neither
+        # column reads the other's axis.
+        assert cols["cat01"].source.role == AxisRole.CATEGORY
+        assert cols["cat01"].source.axis == "cat01"
+        assert cols["cat03"].source.role == AxisRole.CATEGORY
+        assert cols["cat03"].source.axis == "cat03"
+        assert cols["value"].source.role == AxisRole.VALUE
+
+    def test_multi_category_rule_maps_each_category_to_its_own_column(self) -> None:
+        # Applied, the two categories land in distinct cells (not one
+        # overwriting the other) — the observable 1:1 result for a multi-axis
+        # wage-style table.
+        clf = TableClassification((
+            _axis("cat01", AxisRole.CATEGORY),
+            _axis("cat03", AxisRole.CATEGORY),
+            _axis("tab", AxisRole.VALUE),
+            _axis("time", AxisRole.TIME),
+        ))
+        rule = build_generic_rule(clf)
+        assert rule is not None
+        objs = (
+            _classobj("cat01", [("01", "管理職")]),
+            _classobj("cat03", [("L", "大企業")]),
+        )
+        rows = ({"cat01": "01", "cat03": "L", "tab": "020",
+                 "time": "2020000000", "value": "550", "unit": "千円"},)
+        out = apply_v2_rule(rows, clf, rule, class_objs=objs)
+        assert out[0]["cat01"] == {"code": "01", "label": "管理職"}
+        assert out[0]["cat03"] == {"code": "L", "label": "大企業"}
+        assert out[0]["value"] == {"value": "550", "unit": "千円"}
 
     def test_empty_classification_declines(self) -> None:
         assert build_generic_rule(TableClassification(())) is None
@@ -291,8 +327,9 @@ class TestBuildGenericPivot:
     members into one record per non-meta group, so an uncovered meta-axis
     table comes back folded (1 row per logical record) rather than spread.
     The meta-axis member names become the pivot's columns; the non-meta axes
-    stay 1:1. The decline conditions that would risk a wrong or raising rule
-    (≥2 meta-axes, a repeated non-meta role, a column-name collision, or
+    stay 1:1, each addressed by its axis id so a repeated non-meta role (建築主 ×
+    用途, #38) folds rather than declining. The decline conditions that would
+    risk a wrong or raising rule (≥2 meta-axes, a column-name collision, or
     missing member names) still route to Layer D.
     """
 
@@ -359,17 +396,67 @@ class TestBuildGenericPivot:
         objs = (_classobj("cat01", [("1", "a")]), _classobj("cat02", [("1", "b")]))
         assert build_generic_rule(clf, objs) is None
 
-    def test_repeated_nonmeta_role_with_meta_axis_declines(self) -> None:
-        # Two category axes alongside the meta-axis: which column reads which
-        # category is unaddressable, so decline even though the meta-axis is
-        # single (#34 keeps the repeated-non-meta-role decline).
+    def test_repeated_nonmeta_role_with_meta_axis_pivots(self) -> None:
+        # #38: 建築着工 (建築主 × 用途 + 測定量 meta + time). Two category axes
+        # alongside the meta-axis no longer decline — each is addressed by its
+        # axis id and grouped, while the meta-axis folds into where-columns.
         clf = TableClassification((
             _axis("cat01", AxisRole.CATEGORY),
             _axis("cat03", AxisRole.CATEGORY),
             _axis("cat02", AxisRole.META_AXIS),
             _axis("time", AxisRole.TIME),
         ))
-        assert build_generic_rule(clf, _TRADE_META) is None
+        rule = build_generic_rule(clf, _TRADE_META)
+        assert rule is not None
+        cols = {c.column: c for c in rule.output}
+        # Both categories stay 1:1, disambiguated by axis id.
+        assert cols["cat01"].source.axis == "cat01"
+        assert cols["cat01"].source.where is None
+        assert cols["cat03"].source.axis == "cat03"
+        # The meta-axis still folds into one where-column per member.
+        assert cols["合計_金額"].source.role == AxisRole.META_AXIS
+        assert cols["合計_金額"].source.where.equals == "合計_金額"
+
+    def test_building_starts_folds_measures_into_columns(self) -> None:
+        # The headline #38 case (0003114490): 測定量 (tab) is the meta-axis over
+        # three measures; 建築主 (cat01) and 用途 (cat03) are two category axes,
+        # plus area and time. Auto must group by (建築主, 用途, area, time) and
+        # fold the three measures into one record — the shape that before #38
+        # fell to Layer D, leaving the table spread one row per measure.
+        clf = TableClassification((
+            _axis("tab", AxisRole.META_AXIS),
+            _axis("cat01", AxisRole.CATEGORY),
+            _axis("cat03", AxisRole.CATEGORY),
+            _axis("area", AxisRole.AREA),
+            _axis("time", AxisRole.TIME),
+        ))
+        objs = (
+            _classobj("tab", [("100", "建築物の数"), ("200", "床面積"), ("300", "工事費予定額")]),
+            _classobj("cat01", [("P", "公共")]),
+            _classobj("cat03", [("1", "居住用"), ("2", "非居住用")]),
+        )
+        rule = build_generic_rule(clf, objs)
+        assert rule is not None
+        # Two 用途 values × three measures: the grain spans *both* category axes,
+        # so the six rows fold into two records (one per 用途), not one.
+        rows = tuple(
+            {"tab": tab, "cat01": "P", "cat03": use, "area": "13000",
+             "time": "2020000000", "value": val}
+            for use, measures in (("1", ("12", "3400", "56000")), ("2", ("4", "900", "21000")))
+            for tab, val in zip(("100", "200", "300"), measures)
+        )
+        out = apply_v2_rule(rows, clf, rule, class_objs=objs)
+        assert len(out) == 2  # grouped by (建築主, 用途, area, time), measures folded in
+        by_use = {row["cat03"]["label"]: row for row in out}
+        assert by_use["居住用"]["cat01"] == {"code": "P", "label": "公共"}
+        assert by_use["居住用"]["area"] == {"code": "13000", "label": "13000"}
+        assert by_use["居住用"]["建築物の数"] == {"value": "12", "unit": None}
+        assert by_use["居住用"]["床面積"] == {"value": "3400", "unit": None}
+        assert by_use["居住用"]["工事費予定額"] == {"value": "56000", "unit": None}
+        # The second 用途 is a distinct record — proof the repeated-role axis
+        # participates in the grain, not just the first category.
+        assert by_use["非居住用"]["建築物の数"] == {"value": "4", "unit": None}
+        assert by_use["非居住用"]["工事費予定額"] == {"value": "21000", "unit": None}
 
     def test_member_name_colliding_with_nonmeta_column_declines(self) -> None:
         # A meta member literally named "area" would collide with the area

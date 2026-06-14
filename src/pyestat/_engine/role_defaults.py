@@ -188,18 +188,18 @@ def build_generic_rule(
 
     Two shapes are generated. A table with **no meta-axis** maps each axis to
     one 1:1 column: the ``value`` role reads the observation cell, every other
-    role reads its own axis. A table with **exactly one flat meta-axis** is
-    pivoted (#34): the non-meta axes stay 1:1 and the meta-axis is folded into
-    one ``where`` column per member, so the table comes back one record per
-    non-meta group (column = the member's NFKC-normalized name). Naming the
-    pivot columns needs the member names, so a meta-axis table declines
-    without ``class_objs``.
+    role reads its own axis (addressed by axis id, so two axes of one role —
+    建築主 × 用途, #38 — each get a column). A table with **exactly one flat
+    meta-axis** is pivoted (#34): the non-meta axes stay 1:1 and the meta-axis
+    is folded into one ``where`` column per member, so the table comes back one
+    record per non-meta group (column = the member's NFKC-normalized name).
+    Naming the pivot columns needs the member names, so a meta-axis table
+    declines without ``class_objs``.
 
     Returns ``None`` (→ Layer D) when the table cannot be structured *or* the
     meta-axis is not safe to flat-pivot: an ``unknown`` axis (the classifier's
     route-to-D sentinel), **two or more** meta-axes (folding several needs
-    explicit disambiguation), a **repeated non-meta role** (no way to address
-    one of several same-role axes yet), a **hierarchical meta-axis** (its
+    explicit disambiguation), a **hierarchical meta-axis** (its
     members carry a code hierarchy that folds a second dimension into them —
     trade's measure×period cross; flat-pivoting would spread it into columns,
     so it rides Layer D and a rule (#37) reshapes it — see
@@ -227,8 +227,6 @@ def build_generic_rule(
         return None
     non_meta = [axis for axis in axes if axis.role != AxisRole.META_AXIS]
     non_meta_roles = [axis.role for axis in non_meta]
-    if len(set(non_meta_roles)) != len(non_meta_roles):
-        return None
     # On the 1:1 (no-meta) shape the observation cell exists on every e-Stat
     # row whether or not a tab axis describes it (#33), so the column set
     # must read it exactly once; on the pivot shape the observation lives in
@@ -265,29 +263,37 @@ def _one_to_one_columns(
 ) -> list[OutputColumn] | None:
     """One 1:1 column per non-meta axis, or ``None`` on a name collision.
 
-    The ``value`` role becomes the ``value`` column; every other axis reads
-    its own id. With ``ensure_value`` (the 1:1 rule shape, #33) the column
-    set always reads the observation cell exactly once: when no axis carries
-    the VALUE role, a synthesized ``value`` column is appended — the
-    observation exists on every e-Stat row whether or not a tab axis
-    describes it, and without the column it silently vanishes. A non-value
-    axis id'd ``value`` would collide with that column either way, so the
-    rule declines (→ Layer D) instead of building a duplicate.
+    The ``value`` role becomes the ``value`` column (reading the observation
+    cell, so it carries no axis); every other axis reads its own id and is
+    *addressed by that id* (#38), so two axes of one role — 建築主 × 用途 —
+    resolve to distinct columns instead of colliding on the role. With
+    ``ensure_value`` (the 1:1 rule shape, #33) the column set always reads the
+    observation cell exactly once: when no axis carries the VALUE role, a
+    synthesized ``value`` column is appended — the observation exists on every
+    e-Stat row whether or not a tab axis describes it, and without the column it
+    silently vanishes. A non-value axis id'd ``value`` would collide with that
+    column either way, so the rule declines (→ Layer D) instead of building a
+    duplicate.
     """
-    names = ["value" if axis.role == AxisRole.VALUE else axis.axis_id for axis in axes]
-    roles = [axis.role for axis in axes]
-    if ensure_value and AxisRole.VALUE not in roles:
-        names.append("value")
-        roles.append(AxisRole.VALUE)
+    # (axis_id, role) per column. The VALUE role reads the observation cell, not
+    # an axis, so it carries no axis id — decided here, once, so the column's
+    # name and source agree without re-checking the role downstream.
+    specs: list[tuple[str | None, Any]] = [
+        (None if axis.role == AxisRole.VALUE else axis.axis_id, axis.role)
+        for axis in axes
+    ]
+    if ensure_value and AxisRole.VALUE not in (role for _axis_id, role in specs):
+        specs.append((None, AxisRole.VALUE))
+    names = ["value" if role == AxisRole.VALUE else axis_id for axis_id, role in specs]
     if len(set(names)) != len(names):
         return None
     return [
         OutputColumn(
             column=name,
-            source=RoleSource(role=role),
+            source=RoleSource(role=role, axis=axis_id),
             transform=default_transform(role),
         )
-        for name, role in zip(names, roles)
+        for (axis_id, role), name in zip(specs, names)
     ]
 
 

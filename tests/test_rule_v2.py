@@ -305,6 +305,89 @@ class TestPivotUnitFromSchema:
             ))
 
 
+class TestAxisIdAddressing:
+    """A source addresses an axis two ways (#38): by *role* (the default —
+    resolves to the single axis of that role) or by *axis id* (``axis:``,
+    picking one of several same-role axes). Id addressing is what lets a table
+    with two ``category`` axes — 建築主 × 用途, 職種 × 企業規模 — map each to its
+    own column; role addressing alone cannot tell them apart. Member selection
+    *within* a meta-axis stays ``where`` / ``key``'s job, so ``axis`` is the
+    companion for the non-meta repeated-role case."""
+
+    def test_axis_addressed_source_parses(self) -> None:
+        # A column may name both a role (its cell shape / transform default)
+        # and the specific axis id it draws from.
+        rule = RuleV2.model_validate(_long(
+            match={"role_pattern": ["category", "category", "value"]},
+            output=[
+                {"column": "owner", "source": {"role": "category", "axis": "cat01"}},
+                {"column": "use", "source": {"role": "category", "axis": "cat02"}},
+                {"column": "value", "source": {"role": "value"}},
+            ],
+        ))
+        assert rule.output[0].source is not None
+        assert rule.output[0].source.role == AxisRole.CATEGORY
+        assert rule.output[0].source.axis == "cat01"
+        assert rule.output[1].source.axis == "cat02"
+        # A source that names no axis keeps the role-only addressing.
+        assert rule.output[2].source.axis is None
+
+    def test_axis_on_a_value_source_rejected(self) -> None:
+        # A VALUE column reads the observation cell, not an axis, so pinning an
+        # axis id is meaningless — and apply never consults it (it resolves the
+        # cell before axis resolution). Reject at load so the contract that "the
+        # named axis is honored" holds for every role that accepts `axis`.
+        with pytest.raises(ValidationError, match="directly-addressable"):
+            RuleV2.model_validate(_long(output=[
+                {"column": "v", "source": {"role": "value", "axis": "tab"}},
+            ]))
+
+    def test_axis_on_a_meta_axis_source_rejected(self) -> None:
+        # A meta-axis selects *members* with where/key; `axis` picks *which*
+        # axis a non-meta role draws from. Combining them on a meta-axis source
+        # would be silently ignored (the pivot resolves the meta-axis by role),
+        # so it is an authoring error caught loud.
+        with pytest.raises(ValidationError, match="directly-addressable"):
+            RuleV2.model_validate(_long(
+                match={"role_pattern": ["meta-axis", "time"]},
+                output=[
+                    {"column": "time", "source": {"role": "time"}, "transform": "yearly"},
+                    {"column": "x",
+                     "source": {"role": "meta-axis", "axis": "cat02",
+                                "where": {"equals": "合計_金額"}}},
+                ],
+            ))
+
+    def test_axis_parses_on_time_and_area_sources(self) -> None:
+        # The non-meta, non-value roles all accept `axis` (a table can carry two
+        # of any of them), not only category.
+        rule = RuleV2.model_validate(_long(
+            match={"role_pattern": ["time", "area", "value"]},
+            output=[
+                {"column": "t", "source": {"role": "time", "axis": "time"}, "transform": "yearly"},
+                {"column": "a", "source": {"role": "area", "axis": "area"}, "transform": "passthrough"},
+                {"column": "value", "source": {"role": "value"}, "transform": "passthrough"},
+            ],
+        ))
+        assert rule.output[0].source.axis == "time"
+        assert rule.output[1].source.axis == "area"
+
+    def test_axis_survives_short_form_expansion(self) -> None:
+        # Expansion fills the transform default but must preserve an explicit
+        # axis — otherwise a repeated-role rule would lose the disambiguation.
+        rule = expand_short_form(RuleV2.model_validate(_long(
+            match={"role_pattern": ["category", "category", "value"]},
+            output=[
+                {"column": "owner", "source": {"role": "category", "axis": "cat01"}},
+                {"column": "use", "source": {"role": "category", "axis": "cat02"}},
+                {"column": "value", "source": {"role": "value"}},
+            ],
+        )))
+        assert rule.output[0].source.axis == "cat01"
+        assert rule.output[0].transform == "passthrough"
+        assert rule.output[1].source.axis == "cat02"
+
+
 class TestShortFormExpansion:
     def test_unspecified_transform_falls_back_to_role_default(self) -> None:
         # A column that names its source but omits transform inherits the

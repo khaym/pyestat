@@ -173,6 +173,69 @@ def _hierarchical_category_payload() -> dict[str, Any]:
     }
 
 
+def _building_starts_payload() -> dict[str, Any]:
+    """建築着工 0003114490 in miniature: the ``tab`` axis is a meta-axis over
+    three measures (建築物の数 / 床面積 / 工事費予定額), and 建築主 (cat01) and
+    用途 (cat03) are *two* category axes alongside area and time. The shape #38
+    targets — before it, the repeated category role sent this to Layer D spread
+    one row per measure; now Layer A folds it into one record per (建築主, 用途,
+    area, time) with the three measures as columns.
+    """
+    return {
+        "GET_STATS_DATA": {
+            "RESULT": {"STATUS": 0},
+            "STATISTICAL_DATA": {
+                "RESULT_INF": {"TOTAL_NUMBER": 3},
+                "TABLE_INF": {"@id": "T"},
+                "CLASS_INF": {"CLASS_OBJ": [
+                    {"@id": "tab", "@name": "表章項目", "CLASS": [
+                        {"@code": "100", "@name": "建築物の数"},
+                        {"@code": "200", "@name": "床面積"},
+                        {"@code": "300", "@name": "工事費予定額"},
+                    ]},
+                    {"@id": "cat01", "@name": "建築主", "CLASS": {"@code": "P", "@name": "公共"}},
+                    {"@id": "cat03", "@name": "用途", "CLASS": {"@code": "1", "@name": "居住用"}},
+                    {"@id": "area", "@name": "地域", "CLASS": {"@code": "13000", "@name": "東京都"}},
+                    {"@id": "time", "@name": "時間軸（年次）",
+                     "CLASS": {"@code": "2020000000", "@name": "2020年"}},
+                ]},
+                "DATA_INF": {"VALUE": [
+                    {"@tab": "100", "@cat01": "P", "@cat03": "1", "@area": "13000", "@time": "2020000000", "$": "12"},
+                    {"@tab": "200", "@cat01": "P", "@cat03": "1", "@area": "13000", "@time": "2020000000", "$": "3400"},
+                    {"@tab": "300", "@cat01": "P", "@cat03": "1", "@area": "13000", "@time": "2020000000", "$": "56000"},
+                ]},
+            },
+        }
+    }
+
+
+def _multi_category_payload() -> dict[str, Any]:
+    """A wage-structure-style table: a single-value ``tab`` (so the measure is
+    1:1, not spread) with *two* category axes — 職種 (cat01) and 企業規模 (cat03)
+    — plus time. No meta-axis, so #38's 1:1 path maps each category to its own
+    column rather than declining for the repeated role.
+    """
+    return {
+        "GET_STATS_DATA": {
+            "RESULT": {"STATUS": 0},
+            "STATISTICAL_DATA": {
+                "RESULT_INF": {"TOTAL_NUMBER": 1},
+                "TABLE_INF": {"@id": "T"},
+                "CLASS_INF": {"CLASS_OBJ": [
+                    {"@id": "tab", "@name": "表章項目", "CLASS": {"@code": "020", "@name": "所定内給与額"}},
+                    {"@id": "cat01", "@name": "職種", "CLASS": {"@code": "01", "@name": "管理職"}},
+                    {"@id": "cat03", "@name": "企業規模", "CLASS": {"@code": "L", "@name": "大企業"}},
+                    {"@id": "time", "@name": "時間軸（年次）",
+                     "CLASS": {"@code": "2020000000", "@name": "2020年"}},
+                ]},
+                "DATA_INF": {"VALUE": [
+                    {"@tab": "020", "@cat01": "01", "@cat03": "L", "@time": "2020000000", "$": "550", "@unit": "千円"},
+                ]},
+            },
+        }
+    }
+
+
 class TestAggregateSelection:
     """``aggregates=`` filters detail / aggregate rows before any rule runs
     (#36), so a caller avoids double-counting 総数 against its 品目. These pin
@@ -204,6 +267,43 @@ class TestAggregateSelection:
         client = _make_client(_hierarchical_category_payload(), builtin_rules=[])
         out = client.get_stats_data("X", rule=None, aggregates="exclude").values
         assert [r["cat01"] for r in out] == ["1", "2"]
+
+
+class TestMultiAxisAuto:
+    """``rule="auto"`` structures a table with two axes of the same role (#38).
+    e-Stat ships these often — 建築着工 (建築主 × 用途), 賃金構造 (職種 × 企業規模).
+    Before #38 the repeated role sent them to Layer D (raw codes); now Layer A
+    addresses each axis by id and structures them. These pin the request-path
+    wiring with no builtin rules in play, so resolution falls to Layer A.
+    """
+
+    def test_building_starts_folds_measures_into_one_record(self) -> None:
+        # The three measure rows of one (建築主, 用途, area, time) group fold
+        # into a single record, each measure a {value,unit} column named by its
+        # 表章項目 member. The two category axes resolve to distinct cells.
+        client = _make_client(_building_starts_payload(), builtin_rules=[])
+        out = client.get_stats_data("0003114490").values
+        assert len(out) == 1
+        row = out[0]
+        assert row["cat01"] == {"code": "P", "label": "公共"}
+        assert row["cat03"] == {"code": "1", "label": "居住用"}
+        assert row["area"] == {"code": "13000", "label": "東京都"}
+        assert row["time"]["normalized"] == "2020"
+        assert row["建築物の数"] == {"value": "12", "unit": None}
+        assert row["床面積"] == {"value": "3400", "unit": None}
+        assert row["工事費予定額"] == {"value": "56000", "unit": None}
+
+    def test_multi_category_maps_each_category_to_its_own_column(self) -> None:
+        # No meta-axis: 1:1 with the two categories in separate columns (one
+        # not overwriting the other) and the observation in `value`.
+        client = _make_client(_multi_category_payload(), builtin_rules=[])
+        out = client.get_stats_data("X").values
+        assert len(out) == 1
+        row = out[0]
+        assert row["cat01"] == {"code": "01", "label": "管理職"}
+        assert row["cat03"] == {"code": "L", "label": "大企業"}
+        assert row["value"] == {"value": "550", "unit": "千円"}
+        assert row["time"]["normalized"] == "2020"
 
 
 class TestRawMode:

@@ -106,13 +106,41 @@ class MetaKey(_Strict):
         return self
 
 
+# The roles an `axis` id can pick among: those that resolve to an axis at
+# apply time (see ``apply._resolve_axis``). VALUE reads the observation cell
+# and META_AXIS selects members with where/key, so neither honors `axis`.
+_AXIS_ADDRESSABLE_ROLES = frozenset(
+    {AxisRole.TIME, AxisRole.AREA, AxisRole.CATEGORY}
+)
+
+
 class RoleSource(_Strict):
-    """Where a v2 output column draws its value from: an axis *role*.
+    """Where a v2 output column draws its value from: an axis *role*, and
+    optionally a specific axis *id*.
 
     ``role`` reuses the classifier's :class:`AxisRole` vocabulary so a
-    rule and the classifier speak the same language. On a ``meta-axis`` role
-    one of two pivot modifiers may appear (never both on one column — they
-    have opposite jobs):
+    rule and the classifier speak the same language. It fixes the column's
+    cell shape (a time cell, a ``{code, label}`` dimension, a ``{value, unit}``
+    measure) and its default transform regardless of how the axis is picked.
+
+    *Which* axis the role draws from is resolved two ways (#38):
+
+    * **By role (the default)** — ``axis`` is ``None``; the role must resolve
+      to exactly one axis in the table. This is the common case (one ``time``,
+      one ``area``).
+    * **By axis id** — ``axis`` names one specific axis. This is what lets a
+      table with *two* axes of the same role — 建築主 × 用途, 職種 × 企業規模 —
+      map each to its own column; role addressing alone cannot tell them apart.
+      The named axis must actually carry ``role`` (checked at apply time, where
+      the table is known). ``axis`` is valid only on a *directly-addressable*
+      role — ``time`` / ``area`` / ``category`` — the roles that resolve to an
+      axis: a ``value`` column reads the observation cell (no axis), and a
+      ``meta-axis`` selects members with ``where`` / ``key`` (below), so an
+      ``axis`` on either would be silently ignored and is rejected at load.
+
+    On a ``meta-axis`` role one of two pivot modifiers may appear (never both
+    on one column — they have opposite jobs); both select *within* a single
+    meta-axis, a separate concern from ``axis`` picking *which* axis:
 
     * ``where`` — a filter (#10/#37): rows are folded by the non-meta axes
       (and any ``key`` grain) and the predicate picks which member's cell
@@ -126,14 +154,26 @@ class RoleSource(_Strict):
       surfaces, so it co-occurs with ``where`` and broadcasts to every
       period row.
 
-    ``where`` and ``key`` are valid only on a ``meta-axis`` source; on any
-    other role a referenced role must resolve to exactly one axis.
+    ``where``, ``key``, and ``unit_from`` are valid only on a ``meta-axis``
+    source.
     """
 
     role: AxisRole
+    axis: str | None = None
     where: MetaWhere | None = None
     key: MetaKey | None = None
     unit_from: MetaWhere | None = None
+
+    @model_validator(mode="after")
+    def _axis_id_requires_addressable_role(self) -> "RoleSource":
+        if self.axis is not None and self.role not in _AXIS_ADDRESSABLE_ROLES:
+            raise ValueError(
+                "an `axis` id is only valid on a directly-addressable role "
+                "(time / area / category); a value column reads the observation "
+                "cell and a meta-axis selects members with where/key "
+                f"(got role={self.role.value})"
+            )
+        return self
 
     @model_validator(mode="after")
     def _pivot_modifiers_require_meta_axis(self) -> "RoleSource":

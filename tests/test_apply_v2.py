@@ -159,6 +159,51 @@ class TestApplyV2RoleResolution:
             apply_v2_rule(_ROWS, two_cats, rule)
 
 
+class TestAxisIdAddressing:
+    """A source may address a specific axis by id (#38), not only by role.
+    This is what resolves a *repeated* non-meta role: two ``category`` axes
+    (建築主 × 用途) each get their own column, addressed by their axis id —
+    where bare role addressing (:class:`TestApplyV2RoleResolution`) fails."""
+
+    def test_axis_addressed_columns_resolve_distinct_axes(self) -> None:
+        # Two category axes, each column pinned to its own axis id: the cells
+        # come from the addressed axis, not an arbitrary same-role one.
+        two_cats = TableClassification((
+            _axis("cat01", AxisRole.CATEGORY),
+            _axis("cat02", AxisRole.CATEGORY),
+            _axis("tab", AxisRole.VALUE),
+        ))
+        objs = (
+            _classobj("cat01", [("P", "公共")]),
+            _classobj("cat02", [("1", "居住用")]),
+        )
+        rule = RuleV2.model_validate({
+            "schema_version": "2",
+            "match": {"role_pattern": ["category", "category", "value"]},
+            "output": [
+                {"column": "owner", "source": {"role": "category", "axis": "cat01"}},
+                {"column": "use", "source": {"role": "category", "axis": "cat02"}},
+            ],
+        })
+        rows = ({"cat01": "P", "cat02": "1", "tab": "020", "value": "9"},)
+        out = apply_v2_rule(rows, two_cats, rule, class_objs=objs)
+        assert out[0] == {
+            "owner": {"code": "P", "label": "公共"},
+            "use": {"code": "1", "label": "居住用"},
+        }
+
+    def test_addressing_an_axis_not_carrying_the_role_raises_identifiably(self) -> None:
+        # A column addressing an axis that is not classified with its role
+        # cannot be honored; fail as a typed error (naming the axis) so the
+        # auto path routes to Layer D rather than emitting empty cells.
+        rule = _rule([
+            {"column": "x", "source": {"role": "category", "axis": "cat99"},
+             "transform": "passthrough"},
+        ])
+        with pytest.raises(RoleResolutionError, match="cat99"):
+            apply_v2_rule(_ROWS, _CLASSIFICATION, rule)
+
+
 class TestUnknownTransform:
     """A transform name the registry does not know is an authoring error that
     must surface as a typed :class:`UnknownTransformError` (#32) — never the

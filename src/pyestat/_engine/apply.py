@@ -562,7 +562,7 @@ def _resolve_source(
 
         return read
 
-    axis_id = _single_axis(role, role_to_axes)
+    axis_id = _resolve_axis(col, role_to_axes)
     codes = lookup.get(axis_id, {})
     if role == AxisRole.TIME:
         return _time_reader(col, axis_id, codes)
@@ -635,14 +635,45 @@ def _time_reader(
     return read
 
 
+def _resolve_axis(
+    col: OutputColumn, role_to_axes: dict[AxisRole, list[str]]
+) -> str:
+    """The axis a non-meta column reads from: the one it names, or — when it
+    names none — the single axis of its role.
+
+    Id addressing (#38) is how a repeated non-meta role is resolved: 建築主 ×
+    用途 are two ``category`` axes, and each column names which one it draws
+    from. The named axis must actually carry the column's role; addressing one
+    that does not (a typo, or a role the table lacks) is a typed
+    :class:`RoleResolutionError` naming the axis, so the auto path routes to
+    Layer D rather than reading every row's missing cell as ``None``. With no
+    axis named, fall back to :func:`_single_axis` (the role must be unique).
+    """
+    role = col.source.role
+    if col.source.axis is None:
+        return _single_axis(role, role_to_axes)
+    candidates = role_to_axes.get(role, [])
+    if col.source.axis not in candidates:
+        raise RoleResolutionError(
+            role=role.value,
+            reason=(
+                f"column {col.column!r} addresses axis {col.source.axis!r}, but "
+                f"it is not classified as {role.value} in this table "
+                f"(axes with that role: {candidates or 'none'})"
+            ),
+        )
+    return col.source.axis
+
+
 def _single_axis(
     role: AxisRole, role_to_axes: dict[AxisRole, list[str]]
 ) -> str:
     """The one axis playing ``role``, or a typed error if absent / repeated.
 
-    A non-meta role must resolve to exactly one axis. Zero axes (a rule
-    asking for a role the table lacks) and several axes (a repeated non-meta
-    role, which only #10's ``where`` could disambiguate) both fail as typed
+    A role-addressed (no ``axis`` id) non-meta column must resolve to exactly
+    one axis. Zero axes (a rule asking for a role the table lacks) and several
+    axes (a repeated non-meta role, which is addressed by id instead — see
+    :func:`_resolve_axis`, #38) both fail as typed
     :class:`RoleResolutionError`\\ s so the auto path can route to Layer D.
     """
     axes = role_to_axes.get(role, [])
@@ -656,8 +687,8 @@ def _single_axis(
             role=role.value,
             reason=(
                 f"multiple axes are classified as {role.value} ({axes}); "
-                "#10's where predicate disambiguates a meta-axis, not a "
-                "repeated non-meta role, which is not yet addressable"
+                "address one by axis id (source.axis) to pick which column "
+                "reads which (#38)"
             ),
         )
     return axes[0]
