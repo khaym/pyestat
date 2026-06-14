@@ -664,3 +664,91 @@ class TestApplyV2DerivedGrain:
         ])
         out = apply_v2_rule(_CROSS_ROWS, _CROSS_CLASSIFICATION, rule, class_objs=_CROSS_CLASS_OBJS)
         assert {r["month"]: r["amount"]["value"] for r in out} == {"1月": "35220", "2月": "41080"}
+
+
+# A trade quantity's unit (#39): e-Stat ships the unit not as an `@unit` but as
+# a level-1 member (単位2) whose *observation value* is the unit string ("ＮＯ"
+# = count). That member carries no period grain, so #37's `key` drops it from
+# every month row. A `unit_from` predicate on the measure column reaches the
+# grain-less member and folds its value into the measure's `unit`, so a quantity
+# cell is self-describing ({value, unit}) like every other measure — not a
+# sibling column the consumer must pair by hand.
+_UNIT_CLASS_OBJS = (
+    _hier_classobj("cat02", [
+        {"code": "110", "name": "単位2", "level": "1"},
+        {"code": "130", "name": "合計_数量2", "level": "1"},
+        {"code": "140", "name": "合計_金額", "level": "1", "unit": "千円"},
+        {"code": "160", "name": "1月_数量2", "level": "2", "parentCode": "130"},
+        {"code": "170", "name": "1月_金額", "level": "2", "parentCode": "140", "unit": "千円"},
+        {"code": "190", "name": "2月_数量2", "level": "2", "parentCode": "130"},
+        {"code": "200", "name": "2月_金額", "level": "2", "parentCode": "140", "unit": "千円"},
+    ]),
+)
+# The 単位2 row's *value* is the unit string; the year totals (合計_*) ride
+# along as a real table ships them — none of these grain-less level-1 members
+# forms a month row, but 単位2's value reaches each month row as the broadcast
+# unit.
+_UNIT_ROWS = (
+    {"cat01": "0101", "cat02": "110", "area": "50103", "time": "2026000000", "value": "ＮＯ"},
+    {"cat01": "0101", "cat02": "130", "area": "50103", "time": "2026000000", "value": "13"},
+    {"cat01": "0101", "cat02": "140", "area": "50103", "time": "2026000000", "value": "76300", "unit": "千円"},
+    {"cat01": "0101", "cat02": "160", "area": "50103", "time": "2026000000", "value": "6"},
+    {"cat01": "0101", "cat02": "170", "area": "50103", "time": "2026000000", "value": "35220", "unit": "千円"},
+    {"cat01": "0101", "cat02": "190", "area": "50103", "time": "2026000000", "value": "7"},
+    {"cat01": "0101", "cat02": "200", "area": "50103", "time": "2026000000", "value": "41080", "unit": "千円"},
+)
+
+
+class TestApplyV2UnitBroadcast:
+    """`unit_from` folds a grain-less unit member's value into a measure's unit
+    (#39): trade quantities come back self-describing, the unit broadcast to
+    every period row of the group."""
+
+    def test_quantity_carries_its_broadcast_unit(self) -> None:
+        # The core Done: each month's quantity cell carries the unit ("ＮＯ")
+        # read from the grain-less 単位2 member. The amount column, with no
+        # unit_from, is untouched — it keeps its own @unit (千円). No sibling
+        # unit column: the measure is self-describing like every other measure.
+        rule = _cross_rule([
+            {"column": "month",
+             "source": {"role": "meta-axis", "key": {"pattern": r"^(\d{1,2}月)_"}}},
+            {"column": "quantity",
+             "source": {"role": "meta-axis", "where": {"parent": "合計_数量2"},
+                        "unit_from": {"equals": "単位2"}}},
+            {"column": "amount",
+             "source": {"role": "meta-axis", "where": {"parent": "合計_金額"}}},
+        ])
+        out = apply_v2_rule(_UNIT_ROWS, _CROSS_CLASSIFICATION, rule, class_objs=_UNIT_CLASS_OBJS)
+        assert {r["month"]: r["quantity"] for r in out} == {
+            "1月": {"value": "6", "unit": "ＮＯ"},
+            "2月": {"value": "7", "unit": "ＮＯ"},
+        }
+        assert {r["month"]: r["amount"]["unit"] for r in out} == {"1月": "千円", "2月": "千円"}
+
+    def test_unit_from_matching_several_members_raises(self) -> None:
+        # `unit_from: {level: "1"}` matches three distinct level-1 members
+        # (単位2 / 合計_数量2 / 合計_金額); there is no single unit to fold, so
+        # fail loud like an ambiguous `where` — the author must narrow it.
+        rule = _cross_rule([
+            {"column": "month",
+             "source": {"role": "meta-axis", "key": {"pattern": r"^(\d{1,2}月)_"}}},
+            {"column": "quantity",
+             "source": {"role": "meta-axis", "where": {"parent": "合計_数量2"},
+                        "unit_from": {"level": "1"}}},
+        ])
+        with pytest.raises(RoleResolutionError, match="unit_from"):
+            apply_v2_rule(_UNIT_ROWS, _CROSS_CLASSIFICATION, rule, class_objs=_UNIT_CLASS_OBJS)
+
+    def test_unit_from_matching_no_member_leaves_unit_none(self) -> None:
+        # A unit_from that matches nothing (a retired or absent unit member)
+        # leaves the measure's unit None rather than dropping the cell — the
+        # same graceful stance #37 takes for a `where` matching no member.
+        rule = _cross_rule([
+            {"column": "month",
+             "source": {"role": "meta-axis", "key": {"pattern": r"^(\d{1,2}月)_"}}},
+            {"column": "quantity",
+             "source": {"role": "meta-axis", "where": {"parent": "合計_数量2"},
+                        "unit_from": {"equals": "単位9"}}},
+        ])
+        out = apply_v2_rule(_UNIT_ROWS, _CROSS_CLASSIFICATION, rule, class_objs=_UNIT_CLASS_OBJS)
+        assert {r["month"]: r["quantity"]["unit"] for r in out} == {"1月": None, "2月": None}

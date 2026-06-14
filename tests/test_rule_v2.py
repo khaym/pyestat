@@ -245,6 +245,66 @@ class TestPivotKeySchema:
             ))
 
 
+class TestPivotUnitFromSchema:
+    """The ``unit_from`` selector (#39) fills the unit of the measure a
+    ``where`` surfaces, reading it from a grain-less unit member (trade ships
+    a quantity's unit as a level-1 member, not an ``@unit``). It reuses the
+    ``where`` predicate vocabulary, is valid only on a ``meta-axis`` source,
+    and modifies a ``where`` column — so it needs a ``where`` beside it."""
+
+    def test_unit_from_parses_alongside_where(self) -> None:
+        rule = RuleV2.model_validate(_long(
+            match={"role_pattern": ["meta-axis", "time"]},
+            output=[
+                {"column": "time", "source": {"role": "time"}, "transform": "yearly"},
+                {"column": "quantity",
+                 "source": {"role": "meta-axis",
+                            "where": {"parent": "合計_数量2"},
+                            "unit_from": {"equals": "単位2"}}},
+            ],
+        ))
+        source = rule.output[1].source
+        assert source is not None
+        assert source.unit_from is not None
+        assert source.unit_from.equals == "単位2"
+
+    def test_unit_from_on_non_meta_axis_source_rejected(self) -> None:
+        # Only a meta-axis carries the unit member a `unit_from` reads. On a
+        # time/area/value source there is nothing to select, so fail loud.
+        with pytest.raises(ValidationError, match="meta-axis"):
+            RuleV2.model_validate(_long(output=[
+                {"column": "value",
+                 "source": {"role": "value", "unit_from": {"equals": "単位2"}}},
+            ]))
+
+    def test_unit_from_without_a_where_rejected(self) -> None:
+        # `unit_from` modifies the measure a `where` surfaces; with no `where`
+        # there is no measure to attach a unit to, so the column is malformed.
+        with pytest.raises(ValidationError, match="where"):
+            RuleV2.model_validate(_long(
+                match={"role_pattern": ["meta-axis", "time"]},
+                output=[
+                    {"column": "time", "source": {"role": "time"}, "transform": "yearly"},
+                    {"column": "quantity",
+                     "source": {"role": "meta-axis", "unit_from": {"equals": "単位2"}}},
+                ],
+            ))
+
+    def test_empty_unit_from_predicate_rejected(self) -> None:
+        # `unit_from` reuses the `where` predicate, so an empty one (no
+        # selector) is the same authoring slip — it would match everything.
+        with pytest.raises(ValidationError, match="at least one"):
+            RuleV2.model_validate(_long(
+                match={"role_pattern": ["meta-axis", "time"]},
+                output=[
+                    {"column": "time", "source": {"role": "time"}, "transform": "yearly"},
+                    {"column": "quantity",
+                     "source": {"role": "meta-axis",
+                                "where": {"parent": "合計_数量2"}, "unit_from": {}}},
+                ],
+            ))
+
+
 class TestShortFormExpansion:
     def test_unspecified_transform_falls_back_to_role_default(self) -> None:
         # A column that names its source but omits transform inherits the

@@ -119,14 +119,21 @@ class RoleSource(_Strict):
       this column receives.
     * ``key`` — a grain dimension (#37): the column's value is derived from
       the member name and adds a row dimension to fold the cross around.
+    * ``unit_from`` — a unit source (#39): a ``where``-style predicate that
+      picks a *grain-less* meta member (trade ships a quantity's unit as a
+      level-1 ``単位2`` member, its value the unit string) and folds that
+      value into this measure's ``unit``. It modifies the measure ``where``
+      surfaces, so it co-occurs with ``where`` and broadcasts to every
+      period row.
 
-    Both are valid only on a ``meta-axis`` source; on any other role a
-    referenced role must resolve to exactly one axis.
+    ``where`` and ``key`` are valid only on a ``meta-axis`` source; on any
+    other role a referenced role must resolve to exactly one axis.
     """
 
     role: AxisRole
     where: MetaWhere | None = None
     key: MetaKey | None = None
+    unit_from: MetaWhere | None = None
 
     @model_validator(mode="after")
     def _pivot_modifiers_require_meta_axis(self) -> "RoleSource":
@@ -140,11 +147,21 @@ class RoleSource(_Strict):
                 "a `key` selector is only valid on a meta-axis source "
                 f"(got role={self.role.value})"
             )
+        if self.unit_from is not None and self.role != AxisRole.META_AXIS:
+            raise ValueError(
+                "a `unit_from` selector is only valid on a meta-axis source "
+                f"(got role={self.role.value})"
+            )
         if self.where is not None and self.key is not None:
             raise ValueError(
                 "a column cannot carry both `where` and `key`: `where` selects "
                 "a value, `key` derives a grain dimension — split them into two "
                 "columns"
+            )
+        if self.unit_from is not None and self.where is None:
+            raise ValueError(
+                "`unit_from` fills the unit of the measure a `where` surfaces, "
+                "so it needs a `where` on the same column (#39)"
             )
         return self
 

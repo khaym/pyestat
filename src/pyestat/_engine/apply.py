@@ -321,6 +321,16 @@ def _apply_pivot(
             _member_predicate(
                 col.source.where, name_by_code, parent_name_by_code, level_by_code
             ),
+            (
+                _member_predicate(
+                    col.source.unit_from,
+                    name_by_code,
+                    parent_name_by_code,
+                    level_by_code,
+                )
+                if col.source.unit_from is not None
+                else None
+            ),
             _resolve_transform(col.column, col.transform),
         )
         for col in rule.output
@@ -371,7 +381,7 @@ def _apply_pivot(
             record = dict(base)
             for (column, _), value in zip(key_plan, grain):
                 record[column] = value
-            for column, predicate, transform in where_plan:
+            for column, predicate, unit_predicate, transform in where_plan:
                 matched = [r for r in candidates if predicate(r.get(meta_id))]
                 # Count *distinct* members, not rows: a member duplicated within
                 # one group (a malformed response, or an axis outside the role
@@ -393,11 +403,53 @@ def _apply_pivot(
                     record[column] = None
                 else:
                     row = matched[0]
+                    # `unit_from` (#39) overrides the value row's own @unit with
+                    # a grain-less member's value, read from the whole group
+                    # (`rows`) — the unit member (単位2) carries no period grain,
+                    # so it lives outside `candidates`. Absent it, the column
+                    # keeps its own @unit.
+                    unit = (
+                        _broadcast_unit(column, unit_predicate, rows, meta_id)
+                        if unit_predicate is not None
+                        else row.get("unit")
+                    )
                     record[column] = measure(
-                        _apply_transform(transform, row.get("value")), row.get("unit")
+                        _apply_transform(transform, row.get("value")), unit
                     )
             out.append(record)
     return tuple(out)
+
+
+def _broadcast_unit(
+    column: str,
+    predicate: Callable[[Any], bool],
+    pool: Sequence[dict[str, Any]],
+    meta_id: str,
+) -> Any:
+    """The unit string a ``unit_from`` (#39) broadcasts into a measure: the
+    *value* of the one grain-less member its predicate selects across the
+    group.
+
+    Trade ships a quantity's unit as a level-1 member (``単位2``) whose
+    observation value *is* the unit (``"ＮＯ"``), not an ``@unit`` attribute —
+    so the unit is read from ``value``. ``pool`` is the whole non-meta group
+    (not the period grain), because that member sits outside the grain. A
+    predicate matching no member yields ``None`` — the same graceful stance a
+    ``where`` matching nothing takes — while several *distinct* members is an
+    ambiguity the author must narrow (mirrors the ``where`` multi-match error).
+    """
+    matched = [r for r in pool if predicate(r.get(meta_id))]
+    distinct = {r.get(meta_id) for r in matched}
+    if len(distinct) > 1:
+        raise RoleResolutionError(
+            role="meta-axis",
+            reason=(
+                f"the `unit_from` for column {column!r} matched {len(distinct)} "
+                "distinct members; a unit_from selects a single unit member — "
+                "narrow it (equals / parent / level)"
+            ),
+        )
+    return matched[0].get("value") if matched else None
 
 
 def _member_predicate(
