@@ -139,6 +139,73 @@ def _hierarchical_meta_axis_payload() -> dict[str, Any]:
     }
 
 
+def _hierarchical_category_payload() -> dict[str, Any]:
+    """A value+category+time table whose category axis is a code hierarchy:
+    総数 (the aggregate) over 米 / パン (its leaves), linked by ``@parentCode``.
+
+    The shape Layer A handles generically (like the population fixture), but
+    with the parent/child links #36's aggregate selection keys on — built
+    inline because the bundled fixtures are deliberately flat.
+    """
+    return {
+        "GET_STATS_DATA": {
+            "RESULT": {"STATUS": 0},
+            "STATISTICAL_DATA": {
+                "RESULT_INF": {"TOTAL_NUMBER": 3},
+                "TABLE_INF": {"@id": "T"},
+                "CLASS_INF": {"CLASS_OBJ": [
+                    {"@id": "tab", "@name": "表章項目", "CLASS": {"@code": "020", "@name": "数量"}},
+                    {"@id": "cat01", "@name": "用途分類", "CLASS": [
+                        {"@code": "0", "@name": "総数", "@level": "1"},
+                        {"@code": "1", "@name": "米", "@level": "2", "@parentCode": "0"},
+                        {"@code": "2", "@name": "パン", "@level": "2", "@parentCode": "0"},
+                    ]},
+                    {"@id": "time", "@name": "時間軸（年次）",
+                     "CLASS": {"@code": "2020000000", "@name": "2020年"}},
+                ]},
+                "DATA_INF": {"VALUE": [
+                    {"@tab": "020", "@cat01": "0", "@time": "2020000000", "$": "300"},
+                    {"@tab": "020", "@cat01": "1", "@time": "2020000000", "$": "100"},
+                    {"@tab": "020", "@cat01": "2", "@time": "2020000000", "$": "200"},
+                ]},
+            },
+        }
+    }
+
+
+class TestAggregateSelection:
+    """``aggregates=`` filters detail / aggregate rows before any rule runs
+    (#36), so a caller avoids double-counting 総数 against its 品目. These pin
+    the request-path wiring: the selection composes with the conversion mode
+    (auto, raw) and reads the per-response ``@parentCode`` hierarchy.
+    """
+
+    def test_default_includes_every_row(self) -> None:
+        # Backward compatible: omitting the argument returns all three rows.
+        client = _make_client(_hierarchical_category_payload(), builtin_rules=[])
+        out = client.get_stats_data("X").values
+        assert [r["cat01"]["code"] for r in out] == ["0", "1", "2"]
+
+    def test_exclude_drops_the_aggregate_keeping_leaves(self) -> None:
+        # 総数 has present children (米 / パン) → it is the aggregate and is
+        # dropped; the leaves remain, summable without double-counting.
+        client = _make_client(_hierarchical_category_payload(), builtin_rules=[])
+        out = client.get_stats_data("X", aggregates="exclude").values
+        assert [r["cat01"]["label"] for r in out] == ["米", "パン"]
+
+    def test_only_keeps_the_aggregate(self) -> None:
+        client = _make_client(_hierarchical_category_payload(), builtin_rules=[])
+        out = client.get_stats_data("X", aggregates="only").values
+        assert [r["cat01"]["label"] for r in out] == ["総数"]
+
+    def test_selection_applies_in_raw_mode_too(self) -> None:
+        # The filter runs before the rule, so even raw mode (flat rows, no
+        # transformation) honors it — the leaves come back unflattened.
+        client = _make_client(_hierarchical_category_payload(), builtin_rules=[])
+        out = client.get_stats_data("X", rule=None, aggregates="exclude").values
+        assert [r["cat01"] for r in out] == ["1", "2"]
+
+
 class TestRawMode:
     """``rule=None`` must hand back what e-Stat returned, only flattened."""
 

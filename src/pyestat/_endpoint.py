@@ -227,6 +227,7 @@ class EstatClient:
         stats_data_id: str,
         *,
         rule: "RuleV2 | Literal['auto', 'heuristic'] | None" = "auto",
+        aggregates: Literal["include", "exclude", "only"] = "include",
         max_rows: int | None = None,
         progress: Callable[[ProgressEvent], None] | None = None,
     ) -> StatsDataResponse:
@@ -261,6 +262,25 @@ class EstatClient:
         * :class:`RuleV2` — apply this rule directly against the table's
           classification, bypassing the resolution chain.
 
+        ``aggregates`` selects which rows of a hierarchical table you receive,
+        independent of ``rule``. e-Stat marks a code hierarchy with
+        ``@parentCode`` (総数 → 大分類 → 品目, 全国 → 都道府県); summing a measure
+        across a total and its children double-counts. The filter runs on the
+        raw rows before any rule, so every mode honors it:
+
+        * ``"include"`` (default) — every row; today's behavior, unchanged.
+        * ``"exclude"`` — drop the aggregates, keeping only the leaves (the
+          detail grain), so the result is safe to sum. With several
+          hierarchical dimensions a row is kept only when it is a leaf on every
+          one.
+        * ``"only"`` — keep the aggregates (subtotals / totals), the exact
+          complement of ``"exclude"``.
+
+        Detection is per-response and ``category`` / ``area`` only: a code is
+        an aggregate when a child of it is present in the fetched rows, so a
+        table holding just a total is not filtered. A hierarchy e-Stat ships
+        without ``@parentCode`` is invisible to this filter.
+
         When ``max_rows`` is set, a cheap ``cntGetFlg=Y`` probe runs first
         and the call raises :class:`TooManyRowsError` before any data page
         is downloaded if the table exceeds the cap.
@@ -285,14 +305,28 @@ class EstatClient:
         # one-way: the rule subsystem consumes ``ClassObj`` from this module.
         from pyestat._engine.apply import apply_auto, apply_rule
 
-        if rule == "auto":
+        # Classify once, with the *unfiltered* rows, so #27's data-driven
+        # meta-axis signal sees the whole table; the result feeds the aggregate
+        # selection (#36), resolution, v2 application, and the Layer D
+        # fallback. Computed when "auto" needs it or an aggregate selection
+        # does — raw mode with the default still never classifies.
+        classification = None
+        if rule == "auto" or aggregates != "include":
             from pyestat._engine.classifier import classify
+
+            classification = classify(first.class_objs, first.table_inf, rows=values)
+
+        if aggregates != "include":
+            # Filter detail / aggregate rows before any rule runs, so every
+            # mode honors the selection and a downstream pivot folds only the
+            # chosen grain (#36).
+            from pyestat._engine.aggregate import select_rows
+
+            values = select_rows(values, classification, first.class_objs, aggregates)
+
+        if rule == "auto":
             from pyestat._engine.resolver import resolve_v2
 
-            # Classify once, with the fetched rows, so #27's data-driven
-            # meta-axis signal works on the real request path; the result
-            # feeds resolution, v2 application, and the Layer D fallback.
-            classification = classify(first.class_objs, first.table_inf, rows=values)
             resolved = resolve_v2(
                 classification,
                 user=self._user_rules,
@@ -303,10 +337,13 @@ class EstatClient:
             )
             transformed = apply_auto(values, first.class_objs, classification, resolved)
         else:
-            # raw (``None``) never classifies; ``"heuristic"`` and an
-            # explicit ``RuleV2`` classify lazily inside ``apply_rule``,
-            # only when the mode actually needs it.
-            transformed = apply_rule(values, first.class_objs, stats_data_id, rule)
+            # raw (``None``) and the explicit modes classify lazily inside
+            # ``apply_rule`` only when needed; pass any classification already
+            # computed for the aggregate selection so it is not recomputed on
+            # the post-filter rows.
+            transformed = apply_rule(
+                values, first.class_objs, stats_data_id, rule, classification
+            )
         return StatsDataResponse(
             stats_data_id=stats_data_id,
             total_number=first.total_number,
