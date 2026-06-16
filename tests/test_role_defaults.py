@@ -9,6 +9,8 @@ always has output to return.
 """
 from __future__ import annotations
 
+import pytest
+
 from pyestat._endpoint import ClassObj
 from pyestat._engine.apply import apply_v2_rule
 from pyestat._engine.classifier import (
@@ -22,6 +24,7 @@ from pyestat._engine.role_defaults import (
     build_generic_rule,
     default_transform,
 )
+from pyestat.errors import RoleResolutionError
 
 
 class TestTransformRegistry:
@@ -465,10 +468,85 @@ class TestBuildGenericPivot:
         objs = (_classobj("cat02", [("110", "area"), ("140", "合計_金額")]),)
         assert build_generic_rule(_TRADE_CLF, objs) is None
 
-    def test_members_normalizing_to_the_same_name_decline(self) -> None:
-        # Two members that NFKC-fold to one name would collide as columns.
-        objs = (_classobj("cat02", [("1", "金額２"), ("2", "金額2")]),)
-        assert build_generic_rule(_TRADE_CLF, objs) is None
+    def test_duplicate_member_names_coalesce_into_one_column(self) -> None:
+        # 賃金構造 "DB" tables (#41): the meta-axis carries each measure twice —
+        # codes 01/02 and 33/34 share names+units. The pair is a code-scheme
+        # vintage, not a second dimension, so rather than declining the whole
+        # table Layer A folds same-named members into ONE column per distinct
+        # name (first-seen order).
+        objs = (_classobj("cat02", [("01", "年齢"), ("02", "勤続年数"),
+                                    ("33", "年齢"), ("34", "勤続年数")]),)
+        rule = build_generic_rule(_TRADE_CLF, objs)
+        assert rule is not None
+        where_cols = [c.column for c in rule.output if c.source.where is not None]
+        assert where_cols == ["年齢", "勤続年数"]
+
+    def test_duplicate_members_coalesce_after_nfkc_fold(self) -> None:
+        # The duplicate-name fold keys on the NFKC-normalized name (the same fold
+        # the classifier and the pivot selector use), so two members whose names
+        # differ only by full/half-width (金額２ / 金額2) are one measure and
+        # collapse to a single column — they do not emit two same-named columns
+        # that would trip RuleV2's duplicate-column validator.
+        objs = (_classobj("cat02", [("11", "金額２"), ("22", "金額2")]),)
+        rule = build_generic_rule(_TRADE_CLF, objs)
+        assert rule is not None
+        where_cols = [c.column for c in rule.output if c.source.where is not None]
+        assert where_cols == ["金額2"]
+
+    def test_duplicate_members_fold_when_each_cell_uses_one_block(self) -> None:
+        # The common case: each group cell populates only one block — the code
+        # vintage in effect that year. The 年齢 column reads whichever block's
+        # member is present, so the table folds to one record per group with
+        # the measure under the shared name (no per-vintage column).
+        objs = (_classobj("cat02", [("01", "年齢"), ("33", "年齢")]),)
+        rule = build_generic_rule(_TRADE_CLF, objs)
+        assert rule is not None
+        rows = (
+            {"cat01": "A", "cat02": "01", "area": "00000", "time": "2021000000",
+             "value": "50.6", "unit": "歳"},  # group A: old-code block only
+            {"cat01": "B", "cat02": "33", "area": "00000", "time": "2023000000",
+             "value": "51.0", "unit": "歳"},  # group B: new-code block only
+        )
+        out = apply_v2_rule(rows, _TRADE_CLF, rule, class_objs=objs)
+        by_cat = {r["cat01"]["code"]: r for r in out}
+        assert by_cat["A"]["年齢"] == {"value": "50.6", "unit": "歳"}
+        assert by_cat["B"]["年齢"] == {"value": "51.0", "unit": "歳"}
+
+    def test_duplicate_members_with_equal_values_coalesce_in_one_record(self) -> None:
+        # The single overlap year publishes the measure under BOTH code blocks
+        # with identical values. Both members land in one group; the column
+        # coalesces them (equal value+unit) into the one measure rather than
+        # failing as an ambiguous multi-member match.
+        objs = (_classobj("cat02", [("01", "年齢"), ("33", "年齢")]),)
+        rule = build_generic_rule(_TRADE_CLF, objs)
+        assert rule is not None
+        rows = (
+            {"cat01": "A", "cat02": "01", "area": "00000", "time": "2020000000",
+             "value": "50.6", "unit": "歳"},
+            {"cat01": "A", "cat02": "33", "area": "00000", "time": "2020000000",
+             "value": "50.6", "unit": "歳"},
+        )
+        out = apply_v2_rule(rows, _TRADE_CLF, rule, class_objs=objs)
+        assert len(out) == 1
+        assert out[0]["年齢"] == {"value": "50.6", "unit": "歳"}
+
+    def test_duplicate_members_with_differing_values_raise_for_layer_d(self) -> None:
+        # The coalesce is guarded: same-named members carrying *different*
+        # values are not a vintage dual-coding but a genuine collision (no
+        # single cell to surface). The fold raises a typed error, which the
+        # auto path turns into a Layer D fallback — the same safe decline the
+        # whole table took before #41, now scoped to the conflicting cell.
+        objs = (_classobj("cat02", [("01", "年齢"), ("33", "年齢")]),)
+        rule = build_generic_rule(_TRADE_CLF, objs)
+        assert rule is not None
+        rows = (
+            {"cat01": "A", "cat02": "01", "area": "00000", "time": "2020000000",
+             "value": "50.6", "unit": "歳"},
+            {"cat01": "A", "cat02": "33", "area": "00000", "time": "2020000000",
+             "value": "99.9", "unit": "歳"},
+        )
+        with pytest.raises(RoleResolutionError, match="matched"):
+            apply_v2_rule(rows, _TRADE_CLF, rule, class_objs=objs)
 
     def test_value_role_coexisting_with_meta_axis_declines(self) -> None:
         # #34 F1: a meta-axis already spreads the measures across rows. A

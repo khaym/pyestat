@@ -468,11 +468,14 @@ def _select_one_member(
 
     Counts *distinct* members, not rows: a member duplicated within one pool (a
     malformed response, or an axis outside the role pattern) collapses to its
-    first row — the pre-#37 graceful behavior — while several *different*
-    members matching one predicate is a genuine ambiguity the caller must
-    narrow, raised via ``on_ambiguous`` (the guidance differs by caller: a
-    ``where`` adds a ``key`` to split rows, a ``unit_from`` narrows its
-    selector).
+    first row — the pre-#37 graceful behavior. Several *different* members
+    matching one predicate **coalesce when they surface the same ``(value,
+    unit)``** (#41): 賃金構造 "DB" tables dual-code one measure under two member
+    codes for a code-scheme vintage, so the overlap year carries identical
+    values under both — one observation, not a conflict. Only members that
+    genuinely *disagree* are an ambiguity the caller must narrow, raised via
+    ``on_ambiguous`` (the guidance differs by caller: a ``where`` adds a ``key``
+    to split rows, a ``unit_from`` narrows its selector).
 
     ``pool`` is the caller's to choose: a ``where`` selects within the period
     grain (``candidates``), a ``unit_from`` across the whole non-meta group
@@ -481,7 +484,9 @@ def _select_one_member(
     matched = [r for r in pool if predicate(r.get(meta_id))]
     distinct = {r.get(meta_id) for r in matched}
     if len(distinct) > 1:
-        raise on_ambiguous(len(distinct))
+        surfaced = {(r.get("value"), r.get("unit")) for r in matched}
+        if len(surfaced) > 1:
+            raise on_ambiguous(len(distinct))
     return matched[0] if matched else None
 
 
@@ -516,8 +521,10 @@ def _broadcast_unit(
     so the unit is read from ``value``. ``pool`` is the whole non-meta group
     (not the period grain), because that member sits outside the grain. A
     predicate matching no member yields ``None`` — the same graceful stance a
-    ``where`` matching nothing takes — while several *distinct* members is an
-    ambiguity the author must narrow (mirrors the ``where`` multi-match error).
+    ``where`` matching nothing takes — while several *distinct* members that
+    disagree on their value is an ambiguity the author must narrow (mirrors the
+    ``where`` multi-match error; distinct members sharing one value coalesce,
+    #41).
     """
     row = _select_one_member(
         predicate,

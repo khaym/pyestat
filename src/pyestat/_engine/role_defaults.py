@@ -206,15 +206,20 @@ def build_generic_rule(
     :func:`classifier.is_flat_axis`), a **VALUE role coexisting with the
     meta-axis** (the measure is already spread across the meta-axis, so a
     separate ``value`` column would read an arbitrary group member), or a
-    **column-name collision** (a meta
-    member named like a non-meta column, two members folding to one name, or an
+    **column-name collision** (a meta member named like a non-meta column, or an
     axis id'd ``value``) — declining rather than letting :class:`RuleV2`'s
     duplicate-column validator raise on the auto path, which would break the
-    "auto never raises" guarantee.
+    "auto never raises" guarantee. (Several meta members sharing one name do
+    *not* collide — they coalesce into one column, #41; see :func:`_pivot_columns`.)
 
-    Because every role-default is a total transform (see module docstring) and
-    pivot columns are ``passthrough``, the resulting rule cannot raise at apply
-    time — the Layer A guarantee.
+    Every role-default is a total transform (see module docstring) and pivot
+    columns are ``passthrough``, so no *transform* raises at apply time. The
+    pivot's member selection can still raise a typed ambiguity — a ``where``
+    matching several members that disagree on their value (trade's measure×period
+    cross, #37; or duplicate-name members that are not a benign equal-valued
+    coalesce, #41). That is a :class:`RuleAuthoringError`, which the auto path
+    catches and degrades to Layer D for a library-provided rule (Decision B), so
+    a generic rule never crashes the request — the Layer A guarantee.
     """
     axes = classification.axes
     if not axes:
@@ -308,18 +313,29 @@ def _pivot_columns(
     generated selector and the member it targets cannot drift. Declines when
     the meta-axis is **hierarchical** (its members carry a code hierarchy, so a
     second dimension is folded into them — trade's 合計/月次 × 数量/金額; a flat
-    pivot would spread it into columns, #34 flatness gate), when no member
+    pivot would spread it into columns, #34 flatness gate) or when no member
     names are available (no ``class_objs`` or none for this axis: the columns
-    would be unnamed and the measure silently dropped), or when two members
-    fold to one name (they would collide as columns).
+    would be unnamed and the measure silently dropped).
+
+    **Several members sharing one name coalesce into a single column** (#41).
+    賃金構造 "DB" tables carry each measure twice — same name+unit under a second
+    code block (a code-scheme vintage, not a second dimension); each cell
+    populates one block, the one overlap year dual-codes identical values. One
+    ``where: {equals: name}`` column per *distinct* name lets the apply path
+    pick whichever block's member the cell carries (and coalesce the identical
+    overlap), so the table folds instead of declining on the name repeat — while
+    members that genuinely disagree still surface the apply-time ambiguity that
+    routes to Layer D.
     """
     if class_objs is None:
         return None
     obj = next((o for o in class_objs if o.id == meta_axis.axis_id), None)
     if obj is None or not is_flat_axis(obj):
         return None
-    members = [pivot_member_name(c) for c in obj.classes if "code" in c]
-    if not members or len(set(members)) != len(members):
+    # De-duplicate by name, preserving first-seen order: same-named members are
+    # the same measure (#41), so they share one column the apply path coalesces.
+    members = list(dict.fromkeys(pivot_member_name(c) for c in obj.classes if "code" in c))
+    if not members:
         return None
     return [
         OutputColumn(

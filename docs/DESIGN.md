@@ -154,9 +154,12 @@ Surfacing lets the caller correct their own rule and re-run; a
 wrong-looking result they could not trace to their rule would be worse.
 Degrading avoids raising an error they have no power to resolve — they
 cannot edit a built-in. The two non-failure cases route by the same logic:
-a generic Layer A rule uses only total role-default transforms, so it
-cannot fail at apply time, and a classification too weak to trust produces
-no rule at all — both go straight to Layer D.
+a generic Layer A rule uses only total role-default transforms, so no
+transform fails at apply time — and the one apply-time error its pivot can
+still raise (a `where` matching several members that disagree on their
+value, #37/#41) is a `RuleAuthoringError` this same split degrades to Layer
+D. A classification too weak to trust produces no rule at all. Both go
+straight to Layer D.
 
 An unknown transform name surfaces as `UnknownTransformError` (a typed
 `EstatError`), never a bare `KeyError`, and follows the same split. So does
