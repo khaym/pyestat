@@ -75,12 +75,19 @@ def resolve_v2(
     class_objs: Sequence[ClassObj] = (),
     threshold: Confidence = Confidence.MEDIUM,
     stats_data_id: str = "",
+    stats_code: str | None = None,
 ) -> ResolvedRule | None:
     """Resolve the rule for a classified table, or ``None`` for Layer D.
 
     See the module docstring for the resolution order, the provenance the
     :class:`ResolvedRule` layer carries, and the meaning of a ``None``
     return. ``stats_data_id`` only labels an :class:`AmbiguousRuleError`.
+
+    ``stats_code`` is the table's e-Stat survey-family code (from
+    ``TABLE_INF.STAT_NAME.@code``). A rule that pins ``match.stats_code``
+    matches only when it equals this; a rule that leaves it unset matches by
+    role pattern alone (#29). A table without a statsCode (``None``) matches
+    only unscoped rules, so a family-specific rule never guesses.
 
     ``class_objs`` carries the table's class metadata; the generic Layer A
     fallback needs the meta-axis member names to auto-generate a pivot rule
@@ -90,12 +97,20 @@ def resolve_v2(
     if not classification.clears(threshold):
         return None
     pattern = list(classification.role_pattern)
+
+    def _matches(rule: RuleV2) -> bool:
+        if list(rule.match.role_pattern) != pattern:
+            return False
+        # stats_code is an extra AND-narrowing: an unset rule applies to any
+        # family; a set rule needs the table's family to confirm it (#29).
+        return rule.match.stats_code is None or rule.match.stats_code == stats_code
+
     for rules, layer in (
         (user, RuleLayer.USER),
         (project, RuleLayer.PROJECT),
         (builtin, RuleLayer.BUILTIN),
     ):
-        matched = [rule for rule in rules if list(rule.match.role_pattern) == pattern]
+        matched = [rule for rule in rules if _matches(rule)]
         if len(matched) > 1:
             # A same-layer conflict follows the surface/degrade policy by
             # provenance (DESIGN.md Decision B): a caller-authored layer

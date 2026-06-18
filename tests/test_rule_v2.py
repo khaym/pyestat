@@ -69,6 +69,22 @@ class TestRuleV2Schema:
         assert rule.output[0].source is None
         assert rule.output[0].transform is None
 
+    def test_match_stats_code_is_optional_and_defaults_none(self) -> None:
+        # The common case: a rule matches by role pattern alone, so the bundle
+        # stays at O(role patterns). An absent stats_code is "any family".
+        rule = RuleV2.model_validate(_LONG)
+        assert rule.match.stats_code is None
+
+    def test_match_stats_code_narrows_to_one_family(self) -> None:
+        # A family-specific rule (#29) pins the e-Stat statsCode so a
+        # structurally identical table from another survey does not match it;
+        # role_pattern stays present as the matching authority.
+        rule = RuleV2.model_validate(
+            _long(match={"role_pattern": ["time", "area", "value"], "stats_code": "00350300"})
+        )
+        assert rule.match.stats_code == "00350300"
+        assert rule.match.role_pattern == [AxisRole.TIME, AxisRole.AREA, AxisRole.VALUE]
+
     def test_role_pattern_uses_the_classifier_vocabulary(self) -> None:
         # role_pattern is the same AxisRole vocabulary the classifier
         # emits; a value outside it is a rule-author error, not a new role.

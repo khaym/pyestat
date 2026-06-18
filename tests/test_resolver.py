@@ -174,6 +174,55 @@ class TestLayerAFallback:
         assert where_cols == ["合計_数量2", "合計_金額"]
 
 
+class TestStatsCodeNarrowing:
+    """A rule may pin ``match.stats_code`` so it fires only on its survey
+    family (#29). ``role_pattern`` stays the authority; ``stats_code`` is an
+    extra AND-narrowing that keeps a family-specific rule (whose selectors are
+    tied to one survey's member names) from claiming a structurally identical
+    table from another family."""
+
+    def _scoped(self, *, tag: str, stats_code: str) -> RuleV2:
+        return RuleV2.model_validate({
+            "schema_version": "2",
+            "match": {"role_pattern": ["time", "area", "value"], "stats_code": stats_code},
+            "output": [{"column": tag, "source": {"role": "value"}, "transform": "passthrough"}],
+        })
+
+    def test_scoped_rule_fires_for_its_family(self) -> None:
+        rule = self._scoped(tag="trade", stats_code="00350300")
+        resolved = resolve_v2(_CLEAN, builtin=[rule], stats_code="00350300")
+        assert resolved is not None
+        assert resolved.rule is rule
+        assert resolved.layer is RuleLayer.BUILTIN
+
+    def test_scoped_rule_skips_a_different_family(self) -> None:
+        # Same role pattern, different family: the rule must not fire, so the
+        # clean table falls through to a Layer A generic rather than be folded
+        # by a foreign family's rule.
+        rule = self._scoped(tag="trade", stats_code="00350300")
+        resolved = resolve_v2(_CLEAN, builtin=[rule], stats_code="00200521")
+        assert resolved is not None
+        assert resolved.rule is not rule
+        assert resolved.layer is RuleLayer.GENERIC
+
+    def test_scoped_rule_skips_a_table_with_no_stats_code(self) -> None:
+        # When the table carries no statsCode (TABLE_INF drift), a scoped rule
+        # cannot confirm the family, so it declines rather than guess.
+        rule = self._scoped(tag="trade", stats_code="00350300")
+        resolved = resolve_v2(_CLEAN, builtin=[rule])
+        assert resolved is not None
+        assert resolved.layer is RuleLayer.GENERIC
+
+    def test_unscoped_rule_still_matches_regardless_of_family(self) -> None:
+        # A rule without stats_code keeps the O(role patterns) default: it
+        # matches by role pattern alone whatever family the table belongs to.
+        rule = _rule(["time", "area", "value"], tag="generic_builtin")
+        resolved = resolve_v2(_CLEAN, builtin=[rule], stats_code="00350300")
+        assert resolved is not None
+        assert resolved.rule is rule
+        assert resolved.layer is RuleLayer.BUILTIN
+
+
 class TestThresholdGate:
     def test_low_confidence_axis_routes_to_layer_d(self) -> None:
         # A low-confidence axis means the role pattern itself is unreliable,

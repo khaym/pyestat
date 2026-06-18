@@ -9,8 +9,12 @@ the live-API tests with ``pytest -m integration``.
 
 Coverage focus:
 
-* The bundled rules really match the live tables (auto-resolve picks
-  them up; the resulting rows are normalized).
+* The benchmark tables come back structured from the live API: GDP and
+  the population estimates fold through the generic Layer A path (#34),
+  which needs no bundled rule, and their time axis is normalized with the
+  right granularity. The one bundled rule — foreign trade (#29) — is not
+  exercised here: the table is 3.8M rows and excluded by ``max_rows`` (it
+  is pinned on synthetic rows in ``tests/test_builtin_rules.py`` instead).
 * The ``max_rows`` guard refuses an oversized table without paying
   to download it.
 * Raw mode still works against live JSON.
@@ -55,10 +59,12 @@ def client(app_id: str) -> EstatClient:
     return EstatClient(app_id=app_id)
 
 
-class TestBundledRulesAgainstLiveTables:
-    """Each benchmark table's bundled rule should be picked up by
-    ``rule="auto"`` and produce the normalized fields DESIGN.md
-    promises."""
+class TestBenchmarkTablesStructuredLive:
+    """GDP and the population estimates come back structured from ``rule="auto"``
+    via the generic Layer A path (no bundled rule) with their time axis
+    normalized to the right granularity. (Foreign trade — the one table that
+    needs a bundled rule — is excluded by ``max_rows`` and pinned on synthetic
+    rows in ``tests/test_builtin_rules.py``.)"""
 
     def test_population_estimates_normalizes_monthly_time(self, client: EstatClient) -> None:
         # 4,293 rows in production; well under any sane max_rows.

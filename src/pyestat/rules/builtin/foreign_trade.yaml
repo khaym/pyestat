@@ -1,0 +1,60 @@
+# Foreign trade — 普通貿易統計 品別国別表 (statsCode 00350300, #29).
+#
+# cat02 is a hierarchical measure×period cross: a measure family (数量1 /
+# 数量2 / 金額, level 1) with each month hung under it by @parentCode
+# (level 2). Layer A declines a hierarchical meta-axis (#34) and routes the
+# table to Layer D (raw rows), so without this rule trade comes back
+# unstructured. The rule folds the cross with the #37/#39 meta-axis modifiers:
+#
+#   key       — the month lives only in the member name ("1月_金額"), not in
+#               any code, so a pattern lifts it into the row grain.
+#   where     — each measure family is picked by its parent member's name,
+#               never by enumerating the 36 level-2 month members.
+#   unit_from — a quantity's unit ships as a grain-less 単位 member whose value
+#               is the unit string; fold it in so each quantity cell is
+#               self-describing ({value, unit}).
+#
+# Scope: the 品別国別表 group ([category, meta-axis, area, time]). statsCode
+# 00350300's other structural group — 税関別, which adds a 税関 axis — classifies
+# as [category, meta-axis, category, area, time] and is handled by the sibling
+# rule foreign_trade_customs.yaml.
+#
+# stats_code pins the trade family. role_pattern alone
+# ([category, meta-axis, area, time]) would also fire on a structurally
+# identical table from another survey, where the trade-specific parent / 単位
+# selectors match nothing and `key` drops every member — folding it to zero
+# rows (silent data loss, with no exception to route it to Layer D). Scoping to
+# the family keeps the rule in its lane; role_pattern still does the structural
+# matching (a statsCode spans many shapes, so it cannot select a rule alone).
+schema_version: "2"
+match:
+  role_pattern: [category, meta-axis, area, time]
+  stats_code: "00350300"
+output:
+  - column: commodity
+    source: {role: category}
+    transform: passthrough
+  - column: country
+    source: {role: area}
+    transform: passthrough
+  - column: year
+    source: {role: time}
+    transform: yearly
+  - column: month
+    source:
+      role: meta-axis
+      key: {pattern: '^(\d{1,2}月)_'}
+  - column: quantity1
+    source:
+      role: meta-axis
+      where: {parent: 合計_数量1}
+      unit_from: {equals: 単位1}
+  - column: quantity2
+    source:
+      role: meta-axis
+      where: {parent: 合計_数量2}
+      unit_from: {equals: 単位2}
+  - column: amount
+    source:
+      role: meta-axis
+      where: {parent: 合計_金額}

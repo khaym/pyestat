@@ -221,14 +221,28 @@ class OutputColumn(_Strict):
 
 
 class MatchV2(_Strict):
-    """v2 narrowing predicate: the ordered role pattern a table must show.
+    """v2 narrowing predicate: the ordered role pattern a table must show,
+    optionally narrowed to one statistic family.
 
-    The resolver (#28, ``resolve_v2``) compares this against the
+    The resolver (#28, ``resolve_v2``) compares ``role_pattern`` against the
     classifier's ``role_pattern``; axis ids never appear, which is what
     collapses the rule count from O(tables) to O(role patterns).
+
+    ``stats_code`` is an optional **additional** narrowing (#29): set, the rule
+    fires only on tables whose e-Stat ``statsCode`` (the survey-family code in
+    ``TABLE_INF.STAT_NAME.@code``) equals it. ``role_pattern`` stays the
+    matching authority — a ``statsCode`` spans up to ~30 distinct structures so
+    it over-matches alone (PROPOSAL-AXIS-ROLE-INFERENCE keeps it a non-
+    authoritative fast-path narrowing, never a sole matcher). It exists so a
+    family-specific rule whose selectors are tied to one survey's member names
+    (foreign trade's ``合計_金額`` / ``単位2`` / month-name pivot, #29) declines a
+    structurally identical table from another family rather than fold it into
+    empty rows. Omitted (the default), the rule matches by role pattern alone —
+    the common case that keeps the bundle at O(role patterns).
     """
 
     role_pattern: list[AxisRole]
+    stats_code: str | None = None
 
 
 class RuleV2(_Strict):

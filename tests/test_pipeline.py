@@ -129,6 +129,41 @@ class TestProvenanceRouting:
         assert all("tab" in r and _has_measure(r) and _has_time_cell(r) for r in out)
 
 
+class TestStatsCodeWiring:
+    """``run_pipeline`` lifts the table's statsCode out of ``TABLE_INF`` and
+    hands it to resolution, so a family-scoped built-in (#29) can fire only on
+    its own survey. Without this wiring a ``match.stats_code`` rule could never
+    match on the auto path."""
+
+    _SCOPED_RULE = RuleV2.model_validate({
+        "schema_version": "2",
+        "match": {"role_pattern": ["time", "area", "value"], "stats_code": "00350300"},
+        # A 1:1 rule that drops every axis but the value, so its output shape
+        # ({"only_value"}) is unmistakably distinct from the Layer A generic
+        # ({"time", "area", "value"}) — the test reads which rule won.
+        "output": [{"column": "only_value", "source": {"role": "value"}}],
+    })
+
+    def _run_with_stat_name(self, stat_code: str | None):
+        table_inf = {"STAT_NAME": {"@code": stat_code}} if stat_code is not None else {}
+        return run_pipeline(
+            _ROWS, _CLASS_OBJS, table_inf, "0000", "auto", "include",
+            user_rules=[], project_rules=[], builtin_rules=[self._SCOPED_RULE],
+        )
+
+    def test_scoped_builtin_fires_when_table_statscode_matches(self) -> None:
+        out = self._run_with_stat_name("00350300")
+        assert [set(r) for r in out] == [{"only_value"}, {"only_value"}]
+
+    def test_scoped_builtin_skips_other_family_and_falls_to_layer_a(self) -> None:
+        out = self._run_with_stat_name("00200521")
+        assert all(set(r) == {"time", "area", "value"} for r in out)
+
+    def test_missing_stat_name_falls_to_layer_a(self) -> None:
+        out = self._run_with_stat_name(None)
+        assert all(set(r) == {"time", "area", "value"} for r in out)
+
+
 class TestAggregateSelection:
     """The aggregate filter runs before any rule, so every mode honors it."""
 

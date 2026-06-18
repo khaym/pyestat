@@ -24,6 +24,21 @@ from pyestat._engine.resolver import resolve_v2
 from pyestat._engine.rule import RuleV2
 
 
+def _stats_code_of(table_inf: Mapping[str, Any] | None) -> str | None:
+    """The table's e-Stat survey-family code, or ``None`` when ``TABLE_INF``
+    does not carry it. It lives at ``STAT_NAME.@code``; the schema drifts
+    across tables (``docs/DESIGN.md``), so every level is probed defensively —
+    an absent or malformed ``STAT_NAME`` yields ``None`` (a family-scoped rule
+    then declines) rather than raising on the request path."""
+    if not isinstance(table_inf, Mapping):
+        return None
+    stat_name = table_inf.get("STAT_NAME")
+    if not isinstance(stat_name, Mapping):
+        return None
+    code = stat_name.get("@code")
+    return code if isinstance(code, str) else None
+
+
 def run_pipeline(
     values: tuple[dict[str, Any], ...],
     class_objs: Sequence[ClassObj],
@@ -73,6 +88,7 @@ def run_pipeline(
             builtin=builtin_rules,
             class_objs=class_objs,
             stats_data_id=stats_data_id,
+            stats_code=_stats_code_of(table_inf),
         )
         return apply_auto(values, class_objs, classification, resolved)
     # raw (``None``) and the explicit modes classify lazily inside

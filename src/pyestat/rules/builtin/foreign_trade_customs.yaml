@@ -1,0 +1,49 @@
+# Foreign trade, 税関別 — 普通貿易統計 税関別品別国別表 (statsCode 00350300, #29).
+#
+# The sibling of foreign_trade.yaml: statsCode 00350300 has two structural
+# groups, and this one adds a 税関 (customs office) axis to the 品別国別表 cross.
+# It classifies as [category, meta-axis, category, area, time] — two category
+# axes (品目 cat01 / 税関 cat03) that role addressing alone cannot tell apart, so
+# each column names its axis id (#38). The cat02 measure×period fold (key / where
+# parent / unit_from) is identical to foreign_trade.yaml; see that file for the
+# modifier rationale. Together the two rules structure the whole trade family.
+#
+# stats_code pins the trade family for the same reason as the sibling: the role
+# pattern alone would fire on a structurally identical table from another survey,
+# where the trade-specific selectors match nothing and `key` would fold it to
+# zero rows. role_pattern still does the structural matching.
+schema_version: "2"
+match:
+  role_pattern: [category, meta-axis, category, area, time]
+  stats_code: "00350300"
+output:
+  - column: commodity
+    source: {role: category, axis: cat01}
+    transform: passthrough
+  - column: customs
+    source: {role: category, axis: cat03}
+    transform: passthrough
+  - column: country
+    source: {role: area}
+    transform: passthrough
+  - column: year
+    source: {role: time}
+    transform: yearly
+  - column: month
+    source:
+      role: meta-axis
+      key: {pattern: '^(\d{1,2}月)_'}
+  - column: quantity1
+    source:
+      role: meta-axis
+      where: {parent: 合計_数量1}
+      unit_from: {equals: 単位1}
+  - column: quantity2
+    source:
+      role: meta-axis
+      where: {parent: 合計_数量2}
+      unit_from: {equals: 単位2}
+  - column: amount
+    source:
+      role: meta-axis
+      where: {parent: 合計_金額}
