@@ -23,7 +23,7 @@ from pyestat._engine.classifier import AxisRole
 from pyestat._engine.loader import YamlRuleLoader
 from pyestat._engine.role_defaults import expand_short_form
 from pyestat._engine.rule import RuleV2
-from pyestat.errors import RuleExpansionError
+from pyestat.errors import RuleExpansionError, RuleLoadError
 
 
 # A minimum long-form rule: every column names its source role and
@@ -550,7 +550,7 @@ class TestYamlRuleLoader:
             value: {type: number}
             """,
         )
-        with pytest.raises(ValueError, match="schema_version"):
+        with pytest.raises(RuleLoadError, match="schema_version"):
             YamlRuleLoader().load(p)
 
     def test_unknown_version_still_rejected(self, tmp_path: Path) -> None:
@@ -562,7 +562,7 @@ class TestYamlRuleLoader:
             output: [{column: time}]
             """,
         )
-        with pytest.raises(ValueError, match="schema_version"):
+        with pytest.raises(RuleLoadError, match="schema_version"):
             YamlRuleLoader().load(p)
 
     def test_non_mapping_top_level_rejected(self, tmp_path: Path) -> None:
@@ -570,7 +570,7 @@ class TestYamlRuleLoader:
         # it must fail loud with a clear message rather than an opaque
         # AttributeError when version gating calls ``data.get``.
         p = self._write(tmp_path / "list.yaml", "- not\n- a\n- mapping\n")
-        with pytest.raises(ValueError, match="must contain a mapping"):
+        with pytest.raises(RuleLoadError, match="must contain a mapping"):
             YamlRuleLoader().load(p)
 
     def test_load_dir_returns_all_yaml_files_sorted(self, tmp_path: Path) -> None:

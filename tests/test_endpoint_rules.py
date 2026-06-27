@@ -24,23 +24,45 @@ from typing import Any
 
 import httpx
 import pytest
+import yaml
 
 from pyestat._endpoint import EstatClient
 from pyestat._http import EstatHttpClient
 from pyestat._engine.rule import RuleV2
-from pyestat.errors import RoleResolutionError, TimeFormatError, UnknownTransformError
+from pyestat.errors import (
+    RoleResolutionError,
+    RuleLoadError,
+    TimeFormatError,
+    UnknownTransformError,
+)
 
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
 
 
-def _make_client(
-    payload: dict[str, Any], *, builtin_rules=None, user_rules=None
-) -> EstatClient:
+def _mock_http(payload: dict[str, Any]) -> EstatHttpClient:
     queue: Iterator[dict[str, Any]] = iter([payload])
     transport = httpx.MockTransport(lambda _r: httpx.Response(200, json=next(queue)))
-    http = EstatHttpClient(app_id="x", transport=transport, sleep=lambda _s: None)
-    return EstatClient(http=http, builtin_rules=builtin_rules, user_rules=user_rules)
+    return EstatHttpClient(app_id="x", transport=transport, sleep=lambda _s: None)
+
+
+def _make_client(
+    payload: dict[str, Any],
+    *,
+    builtin_rules=None,
+    user_rules=None,
+    project_rules_dir=None,
+) -> EstatClient:
+    # project_rules_dir defaults to None here (not EstatClient's real default)
+    # so the suite is hermetic: a default client never scans the test process's
+    # working directory for rules. Tests that exercise the real default
+    # construct EstatClient directly under monkeypatch.chdir.
+    return EstatClient(
+        http=_mock_http(payload),
+        builtin_rules=builtin_rules,
+        user_rules=user_rules,
+        project_rules_dir=project_rules_dir,
+    )
 
 
 def _population_payload() -> dict[str, Any]:
@@ -726,3 +748,216 @@ class TestUserRules:
             builtin_rules=[self._v2(role_pattern=["value", "category", "time"], column="from_builtin")],
         )
         assert set(client.get_stats_data("0003448237").values[0]) == {"from_builtin"}
+
+
+class TestProjectRules:
+    """``project_rules_dir`` auto-discovers caller-authored v2 rules from a
+    directory (#15) — the middle resolver layer between ``user_rules`` (C) and
+    the built-ins (B). It is the escape hatch for tables no built-in covers:
+    drop a YAML in the directory and it applies with no code change, so a
+    caller can keep their rules under version control instead of wiring them
+    in Python. Pinned here:
+
+    * a rule dropped in the default ``./rules`` directory is discovered;
+    * ``project_rules_dir=`` relocates the directory the caller scans;
+    * a project rule shadows a built-in for the same role pattern, and a
+      user rule shadows the project rule (the full ``user > project > builtin``
+      precedence resolved end-to-end at the endpoint);
+    * ``project_rules_dir=None`` opts out of discovery entirely;
+    * an absent directory means "no project rules", not an error.
+
+    Like ``TestUserRules``, the single output column name is the signal of
+    which layer won.
+
+    Also pinned: discovery picks up ``.yml`` as well as ``.yaml`` and skips a
+    sub-directory named like a YAML file; ``project_rules_dir=""`` opts out
+    like ``None`` (it must not collapse to the cwd); and a malformed file in
+    the directory surfaces as a typed :class:`RuleLoadError` at construction
+    (the caller authored it — Decision B).
+    """
+
+    _PATTERN = ["value", "category", "time"]
+
+    def _write_rule(
+        self, directory: Path, *, column: str, role_pattern: list[str] | None = None
+    ) -> None:
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / f"{column}.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "schema_version": "2",
+                    "match": {"role_pattern": role_pattern or self._PATTERN},
+                    "output": [
+                        {
+                            "column": column,
+                            "source": {"role": "value"},
+                            "transform": "passthrough",
+                        }
+                    ],
+                },
+                allow_unicode=True,
+            ),
+            encoding="utf-8",
+        )
+
+    def _builtin(self, column: str) -> RuleV2:
+        return RuleV2.model_validate(
+            {
+                "schema_version": "2",
+                "match": {"role_pattern": self._PATTERN},
+                "output": [
+                    {"column": column, "source": {"role": "value"}, "transform": "passthrough"}
+                ],
+            }
+        )
+
+    def test_discovers_rule_in_default_directory(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # "Drop it in ./pyestat_rules and it works": with project_rules_dir
+        # left unset, the client discovers ./pyestat_rules relative to the
+        # working directory.
+        self._write_rule(tmp_path / "pyestat_rules", column="from_project")
+        monkeypatch.chdir(tmp_path)
+        client = EstatClient(http=_mock_http(_population_payload()), builtin_rules=[])
+        assert set(client.get_stats_data("0003448237").values[0]) == {"from_project"}
+
+    def test_project_rules_dir_relocates_the_directory(self, tmp_path: Path) -> None:
+        # The caller's repo layout is unknown, so the scanned directory is
+        # overridable; a rule under the override is discovered.
+        self._write_rule(tmp_path / "custom", column="from_project")
+        client = _make_client(
+            _population_payload(),
+            builtin_rules=[],
+            project_rules_dir=tmp_path / "custom",
+        )
+        assert set(client.get_stats_data("0003448237").values[0]) == {"from_project"}
+
+    def test_project_rule_shadows_matching_builtin(self, tmp_path: Path) -> None:
+        # project (C, middle) wins over builtin (B) on the same role pattern.
+        self._write_rule(tmp_path / "proj", column="from_project")
+        client = _make_client(
+            _population_payload(),
+            builtin_rules=[self._builtin("from_builtin")],
+            project_rules_dir=tmp_path / "proj",
+        )
+        assert set(client.get_stats_data("0003448237").values[0]) == {"from_project"}
+
+    def test_user_rule_shadows_project_rule(self, tmp_path: Path) -> None:
+        # The full chain at the endpoint: user (C, top) shadows project
+        # (C, middle), which would otherwise shadow the builtin.
+        self._write_rule(tmp_path / "proj", column="from_project")
+        user = RuleV2.model_validate(
+            {
+                "schema_version": "2",
+                "match": {"role_pattern": self._PATTERN},
+                "output": [
+                    {"column": "from_user", "source": {"role": "value"}, "transform": "passthrough"}
+                ],
+            }
+        )
+        client = _make_client(
+            _population_payload(),
+            builtin_rules=[self._builtin("from_builtin")],
+            user_rules=[user],
+            project_rules_dir=tmp_path / "proj",
+        )
+        assert set(client.get_stats_data("0003448237").values[0]) == {"from_user"}
+
+    def test_none_opts_out_of_discovery(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Even with a ./pyestat_rules directory present, project_rules_dir=None
+        # loads no project rules, so the builtin fires — the documented escape
+        # from the working-directory dependency.
+        self._write_rule(tmp_path / "pyestat_rules", column="from_project")
+        monkeypatch.chdir(tmp_path)
+        client = _make_client(
+            _population_payload(),
+            builtin_rules=[self._builtin("from_builtin")],
+            project_rules_dir=None,
+        )
+        assert set(client.get_stats_data("0003448237").values[0]) == {"from_builtin"}
+
+    def test_absent_default_directory_is_not_an_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # No ./pyestat_rules in the working directory: construction succeeds
+        # and the builtin fires. The optional directory's absence is the "no
+        # project rules" state, not a failure — the common case must never
+        # raise.
+        monkeypatch.chdir(tmp_path)
+        client = EstatClient(
+            http=_mock_http(_population_payload()),
+            builtin_rules=[self._builtin("from_builtin")],
+        )
+        assert set(client.get_stats_data("0003448237").values[0]) == {"from_builtin"}
+
+    def test_malformed_rule_surfaces_typed_error_at_construction(
+        self, tmp_path: Path
+    ) -> None:
+        # A file the caller dropped in their project dir is caller-authored
+        # (Decision B), so a load failure must SURFACE — and as a typed
+        # RuleLoadError (an EstatError), not a raw yaml/ValueError, so an
+        # ``except EstatError`` catches it. It surfaces at construction (before
+        # any request), since discovery runs in __init__.
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        (proj / "bad.yaml").write_text('schema_version: "1"\n', encoding="utf-8")
+        with pytest.raises(RuleLoadError, match="schema_version"):
+            EstatClient(
+                http=_mock_http(_population_payload()),
+                builtin_rules=[],
+                project_rules_dir=proj,
+            )
+
+    def test_yml_extension_is_discovered(self, tmp_path: Path) -> None:
+        # The drop-in promise must not silently ignore the common ``.yml``
+        # spelling; a .yml rule is discovered like a .yaml one.
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        (proj / "rule.yml").write_text(
+            yaml.safe_dump(
+                {
+                    "schema_version": "2",
+                    "match": {"role_pattern": self._PATTERN},
+                    "output": [
+                        {"column": "from_yml", "source": {"role": "value"}, "transform": "passthrough"}
+                    ],
+                },
+                allow_unicode=True,
+            ),
+            encoding="utf-8",
+        )
+        client = _make_client(
+            _population_payload(), builtin_rules=[], project_rules_dir=proj
+        )
+        assert set(client.get_stats_data("0003448237").values[0]) == {"from_yml"}
+
+    def test_empty_string_opts_out_like_none(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # "" is a natural "no directory" sentinel; it must disable discovery,
+        # not collapse to Path(".") and scan the working directory. A valid rule
+        # sits at the cwd top level so a cwd scan WOULD pick it up; with ""
+        # disabling discovery, the builtin fires instead.
+        self._write_rule(tmp_path, column="from_project")  # tmp_path/from_project.yaml
+        monkeypatch.chdir(tmp_path)
+        client = _make_client(
+            _population_payload(),
+            builtin_rules=[self._builtin("from_builtin")],
+            project_rules_dir="",
+        )
+        assert set(client.get_stats_data("0003448237").values[0]) == {"from_builtin"}
+
+    def test_subdirectory_named_like_yaml_is_skipped(self, tmp_path: Path) -> None:
+        # A sub-directory whose name ends in .yaml must be skipped, not opened
+        # (which would raise a raw IsADirectoryError); discovery still loads the
+        # real rule beside it.
+        proj = tmp_path / "proj"
+        (proj / "trap.yaml").mkdir(parents=True)  # a DIRECTORY named like a yaml file
+        self._write_rule(proj, column="from_project")
+        client = _make_client(
+            _population_payload(), builtin_rules=[], project_rules_dir=proj
+        )
+        assert set(client.get_stats_data("0003448237").values[0]) == {"from_project"}

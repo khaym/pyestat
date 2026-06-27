@@ -21,6 +21,11 @@ roles) degrades, since the caller cannot fix it and preserved raw data
 beats a crash. See ``docs/DESIGN.md`` Decision B for the full policy and
 its decision table.
 
+A third rule-level leaf, :class:`RuleLoadError`, reports a rule *file*
+that could not be read, parsed, or validated into a rule at all — distinct
+from a :class:`RuleAuthoringError`, which is a rule that loaded but cannot
+be applied to a given table.
+
 All inherit from :class:`EstatError` so a coarse ``except EstatError`` is
 enough when the caller does not need to discriminate.
 """
@@ -98,6 +103,25 @@ class AmbiguousRuleError(EstatError):
         )
         self.stats_data_id = stats_data_id
         self.matched_rules = matched_rules
+
+
+class RuleLoadError(EstatError):
+    """A rule file could not be read, parsed, or validated into a rule.
+
+    Raised by the YAML loader when a file cannot become a ``RuleV2``: it is
+    unreadable, is not valid YAML, has a non-mapping top level, names an
+    unsupported ``schema_version``, or fails schema validation. Distinct
+    from :class:`RuleAuthoringError`, which is a rule that loaded but cannot
+    be *applied* to a particular table. Wrapping the underlying ``yaml`` /
+    ``pydantic`` / ``OSError`` in a typed error keeps the coarse
+    ``except EstatError`` contract whole for a caller who dropped a bad file
+    in their project rules directory (#15).
+    """
+
+    def __init__(self, *, path: object, reason: str) -> None:
+        super().__init__(f"cannot load rule file {path}: {reason}")
+        self.path = path
+        self.reason = reason
 
 
 class RuleAuthoringError(EstatError):

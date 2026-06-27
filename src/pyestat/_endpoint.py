@@ -13,6 +13,7 @@ from __future__ import annotations
 import math
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 from pyestat._http import EstatHttpClient, ProgressEvent
@@ -68,6 +69,23 @@ class StatsDataResponse:
     convention. :meth:`to_flat` projects to one column per field for callers
     who prefer the flat shape. A raw (``rule=None``) response keeps Layer 2's
     flat rows; :meth:`to_flat` leaves them unchanged.
+
+    Two properties of this shape are part of the contract:
+
+    * **Values are the raw e-Stat strings, never coerced.** A measure's
+      ``value`` and every ``code`` stay exactly as e-Stat sent them — numbers
+      arrive as strings (``"1097352"``) and suppression markers (``"-"`` /
+      ``"***"`` / ``"X"``) pass through verbatim. Casting is the caller's: a
+      guessed numeric type would corrupt those markers, so a pandas user
+      applies ``pd.to_numeric(..., errors="coerce")`` themselves. Only a time
+      cell's ``normalized`` / ``granularity`` are derived (best-effort); the
+      observation ``value`` is never touched.
+    * **Row keys depend on the mode.** Under ``"auto"`` / ``"heuristic"`` the
+      keys are e-Stat's own axis ids (``cat01``, ``area``, ``time`` …) plus
+      ``value`` for the observation — opaque and table-specific, so what an
+      axis *means* lives in :attr:`class_objs`, not the key. Stable, semantic
+      column names (``commodity``, ``month`` …) come only from a rule; a pivot
+      names its folded columns by the meta-axis member name.
     """
 
     stats_data_id: str
@@ -183,12 +201,26 @@ class EstatClient:
     patching, and so future async / cached variants can swap the
     transport without touching this surface.
 
-    ``user_rules`` injects caller-defined v2 rules into the top precedence
-    layer of the resolution chain (``user > project > builtin``); the
-    ``"auto"`` path resolves them by role pattern. A user rule matching a
-    table's role pattern shadows a built-in for the same pattern; an
-    unrelated user rule does not block built-ins from firing on other
-    tables.
+    The ``"auto"`` path resolves rules by role pattern through three layers,
+    ``user > project > builtin``; a rule in a higher layer shadows a lower
+    one matching the same pattern, while an unrelated rule leaves the lower
+    layers free to fire on other tables.
+
+    * ``user_rules`` — caller-defined v2 rules injected into the top layer.
+    * ``project_rules_dir`` — a directory of ``*.yaml`` / ``*.yml`` rules
+      auto-discovered into the middle layer (#15), the escape hatch for
+      tables no built-in covers: drop a rule file in the directory and it
+      applies with no code change. Defaults to ``"pyestat_rules"`` (i.e.
+      ``./pyestat_rules`` relative to the working directory); pass another
+      path to relocate it, or ``None`` / ``""`` to opt out. The directory
+      name is pyestat-specific so a plain client does not accidentally adopt
+      an unrelated ``./rules`` dir. An absent directory means "no project
+      rules", not an error, so the common no-rules case never raises;
+      discovery is working-directory dependent, and a *malformed* file in the
+      directory raises :class:`RuleLoadError` at construction (the caller
+      authored it — ``docs/DESIGN.md`` Decision B).
+    * ``builtin_rules`` — the library-bundled rules (the bottom layer),
+      loaded from the package by default.
     """
 
     def __init__(
@@ -198,6 +230,7 @@ class EstatClient:
         http: EstatHttpClient | None = None,
         builtin_rules: "Sequence[RuleV2] | None" = None,
         user_rules: "Sequence[RuleV2] | None" = None,
+        project_rules_dir: "str | Path | None" = "pyestat_rules",
     ) -> None:
         if http is None:
             if app_id is None:
@@ -208,14 +241,25 @@ class EstatClient:
         # subsystem may depend on the endpoint module, but not the
         # other way around at module-import time.
         from pyestat._engine.builtin import load_builtin_rules
+        from pyestat._engine.loader import YamlRuleLoader
 
-        # All three layers hold v2 rules; the auto path resolves them by
-        # role pattern. Project-local rules (#15) will populate the middle
-        # layer; until then it is empty.
+        # All three layers hold v2 rules; the auto path resolves them by role
+        # pattern (user > project > builtin). The project layer is populated by
+        # scanning ``project_rules_dir`` so a caller drops a YAML in the
+        # directory and it applies without editing code (#15). Any falsy value
+        # (``None`` / ``""``) opts out — the latter matters because ``Path("")``
+        # would otherwise collapse to the cwd and scan it. ``load_dir`` returns
+        # [] for an absent directory, so a missing default ``./pyestat_rules``
+        # is a no-op; a malformed file present in the directory raises
+        # RuleLoadError (the caller authored it — DESIGN.md Decision B).
         self._user_rules: list[RuleV2] = (
             list(user_rules) if user_rules is not None else []
         )
-        self._project_rules: list[RuleV2] = []
+        self._project_rules: list[RuleV2] = (
+            YamlRuleLoader().load_dir(Path(project_rules_dir))
+            if project_rules_dir
+            else []
+        )
         self._builtin_rules: list[RuleV2] = (
             list(builtin_rules) if builtin_rules is not None else load_builtin_rules()
         )
