@@ -5,8 +5,14 @@ Given a table's axis classification, pick the rule to apply:
 * **C / B** — the highest-precedence v2 rule whose ``match.role_pattern``
   equals the table's classified role pattern. Layers are walked in
   resolution order user (C) > project (C) > builtin (B); the first layer
-  with a match wins, and two rules matching in the *same* layer are an
-  authoring conflict surfaced as :class:`AmbiguousRuleError`.
+  with a match wins. Two rules matching in the *same* layer route by
+  provenance (``docs/DESIGN.md`` Decision B): a caller-authored layer (user
+  / project) surfaces an :class:`AmbiguousRuleError` so the caller can fix
+  their rules, while a built-in conflict — a packaging bug the caller cannot
+  fix — is skipped so resolution falls through to a generic rule or Layer D
+  rather than crash the request. A built-in collision is a defect caught by
+  a bundle-consistency test (``tests/test_builtin_rules.py``), not at request
+  time.
 * **A** — when no specific rule matched, a generic rule built from the
   role-default registry (:func:`build_generic_rule`), which itself returns
   ``None`` for tables that need a pivot.

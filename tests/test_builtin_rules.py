@@ -101,6 +101,44 @@ class TestBuiltinRuleContract:
         assert rule.match.stats_code == _TRADE_STATS_CODE
 
 
+class TestBuiltinBundleIsUnambiguous:
+    """No two bundled rules may match the same table.
+
+    A built-in collision is a packaging defect, not a caller error: the
+    resolver degrades a same-layer built-in conflict to Layer D rather than
+    raise (``docs/DESIGN.md`` Decision B — an internal cause falls back, only
+    a caller-authored conflict surfaces). So a duplicate would silently lose
+    the structure both rules meant to add, with no exception to flag it. This
+    guard fails the build instead, so the conflict is caught before release.
+
+    Two rules collide exactly when ``resolver._matches`` could pick both for
+    one table: they share a role pattern *and* their statsCode scopes can be
+    satisfied by a single table — neither pins a statsCode, or both pin the
+    same one. A different pattern, or two different pinned families, can never
+    match the same table, so they do not collide.
+    """
+
+    def test_no_two_bundled_rules_match_the_same_table(self) -> None:
+        rules = list(load_builtin_rules())
+
+        def collide(a: RuleV2, b: RuleV2) -> bool:
+            if list(a.match.role_pattern) != list(b.match.role_pattern):
+                return False
+            a_code, b_code = a.match.stats_code, b.match.stats_code
+            return a_code is None or b_code is None or a_code == b_code
+
+        conflicts = [
+            (list(a.match.role_pattern), a.match.stats_code, b.match.stats_code)
+            for i, a in enumerate(rules)
+            for b in rules[i + 1 :]
+            if collide(a, b)
+        ]
+        assert not conflicts, (
+            "bundled rules collide (same role pattern + overlapping statsCode); "
+            f"each pair would both match one table: {conflicts}"
+        )
+
+
 class TestForeignTradeBuiltin:
     """The bundled trade rule folds cat02's measure×period cross into one row
     per month, each measure self-describing ({value, unit}): quantities carry
