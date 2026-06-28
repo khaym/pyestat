@@ -39,6 +39,7 @@ PRIVATE_ERROR_LEAVES = {
     "RuleExpansionError",
     "UnknownTransformError",
     "TimeFormatError",
+    "FlatProjectionError",
     "RuleLoadError",
 }
 

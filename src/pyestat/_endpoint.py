@@ -104,6 +104,12 @@ class StatsDataResponse:
         pivot measure's a per-column ``K_unit``). Lossless and idempotent — an
         already-flat (``rule=None``) row passes through untouched. For a
         DataFrame: ``pandas.DataFrame(resp.to_flat())``.
+
+        Raises :class:`FlatProjectionError` when two of the rule's output
+        columns map to one flat key (e.g. a column ``unit`` beside a ``value``
+        measure); the nested ``values`` are unaffected, so rename a column. A
+        built-in rule that would collide degrades to raw output instead, so this
+        only fires on a rule you authored.
         """
         # Lazy import keeps the L2 → L3 dependency out of module-load time
         # (the rule subsystem imports this module, not the other way around).

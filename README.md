@@ -135,6 +135,19 @@ predicate is a projection: meta-axis members you do not select (e.g. a
 table's monthly breakdowns when you keep only the annual totals) are dropped
 from the output — declare a column for every member you need.
 
+### Naming output columns for `to_flat()`
+
+`to_flat()` derives suffix columns from each cell — `{col}_label`, a time
+column's `{col}_code` / `{col}_granularity`, and the bare `unit` that a column
+named exactly `value` carries. Pick output names so none equals another's
+derived key: a `unit` column alongside a `value` measure, or a `region_label`
+column alongside a dimension `region`, collide in the flat shape. The nested
+form is never affected, so `response.values` always works; only `to_flat()` is
+constrained. For your own rule a collision raises a typed error naming the
+column to rename; a built-in that would collide degrades to raw output instead,
+so it never lands on you. (A `unit` column is fine when no `value` measure
+shares the row, as in the pivot above.)
+
 You can also drop rule files in a directory instead of building them in
 Python: `EstatClient` discovers `./pyestat_rules/*.yaml` (and `.yml`) by
 file placement alone — no registration call. Each file is the same schema

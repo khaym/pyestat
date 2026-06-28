@@ -32,6 +32,7 @@ from __future__ import annotations
 from typing import Any
 
 from pyestat._engine.time import TimePoint, best_effort
+from pyestat._errors import FlatProjectionError
 
 # Sentinel: ``time_cell`` normalizes via best-effort when no parsed point is
 # supplied (the total, no-rule path). Distinct from ``None``, which means "a
@@ -94,8 +95,9 @@ def to_flat_rows(values: tuple[dict[str, Any], ...]) -> tuple[dict[str, Any], ..
 
     Lossless and idempotent: each canonical cell expands to its legacy flat
     columns, and a scalar cell (a raw ``rule=None`` row, or an already-flat
-    row) passes through unchanged — so calling this on any response shape is
-    safe.
+    row) passes through unchanged. Two columns whose flat keys collide raise
+    :class:`FlatProjectionError` (see that error) — the nested form never
+    collides, so this is the projection's only failure.
     """
     return tuple(_flatten_row(row) for row in values)
 
@@ -126,19 +128,11 @@ def _flatten_row(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _put(out: dict[str, Any], key: str, value: Any) -> None:
-    """Write a flat column, refusing to silently overwrite.
-
-    The flat projection invents derived keys (``{K}_label``, the bare
-    ``unit``, …) that the rule's own unique-column check cannot see, so two
-    nested fields can map to one flat key (e.g. a ``value`` measure's bare
-    ``unit`` and a sibling column literally named ``unit``). Rather than drop
-    one silently, fail loud and name the collision so the rule author renames
-    a column."""
+    """Write a flat column, raising :class:`FlatProjectionError` rather than
+    silently overwriting when two nested fields map to one flat key — see that
+    error for which derived keys collide and how the collision is routed."""
     if key in out:
-        raise ValueError(
-            f"flat projection collision on column {key!r}: two nested fields "
-            "map to the same flat key — rename one of the rule's output columns"
-        )
+        raise FlatProjectionError(key=key)
     out[key] = value
 
 

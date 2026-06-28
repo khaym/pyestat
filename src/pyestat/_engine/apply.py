@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from pyestat._endpoint import ClassObj
-from pyestat._engine.canonical import dimension, measure, time_cell
+from pyestat._engine.canonical import dimension, measure, time_cell, to_flat_rows
 from pyestat._engine.classifier import (
     AxisRole,
     TableClassification,
@@ -27,6 +27,7 @@ from pyestat._engine.resolver import ResolvedRule
 from pyestat._engine.role_defaults import TIME_PARSERS, TRANSFORMS, expand_short_form
 from pyestat._engine.rule import MetaWhere, OutputColumn, RuleV2
 from pyestat._errors import (
+    FlatProjectionError,
     RoleResolutionError,
     RuleAuthoringError,
     TimeFormatError,
@@ -99,17 +100,30 @@ def apply_auto(
     runtime is a real bug, not an authoring error, and surfaces regardless
     of layer (role-defaults are total, so a Layer A generic rule cannot
     reach here).
+
+    A flat-projection collision is handled separately: it is not an apply
+    failure (the nested result is valid), so a caller's rule keeps that result
+    and the collision surfaces lazily if they call ``to_flat()`` — their column
+    names, their fix. A library rule the caller cannot edit must not surface it,
+    so its collision is detected here (by running the projection) and degraded
+    to Layer D — the same provenance split as an apply failure.
     """
     if resolved is None:
         return _apply_layer_d(values, class_objs, classification)
     try:
-        return apply_v2_rule(
+        result = apply_v2_rule(
             values, classification, resolved.rule, class_objs=class_objs
         )
     except RuleAuthoringError:
         if resolved.layer.is_caller_authored:
             raise
         return _apply_layer_d(values, class_objs, classification)
+    if not resolved.layer.is_caller_authored:
+        try:
+            to_flat_rows(result)
+        except FlatProjectionError:
+            return _apply_layer_d(values, class_objs, classification)
+    return result
 
 
 def _apply_layer_d(
@@ -224,6 +238,12 @@ def apply_v2_rule(
     :class:`RuleExpansionError` for a short-form column that cannot expand.
     The auto path routes these by provenance (surface vs. Layer D — see
     :func:`apply_auto`); the explicit-rule path surfaces them to the caller.
+
+    The nested result is always valid; a rule whose columns collide only in the
+    flat projection is not rejected here. That collision surfaces from
+    :meth:`StatsDataResponse.to_flat` as a :class:`FlatProjectionError`, except
+    on the auto path, where :func:`apply_auto` degrades a library rule's
+    collision to Layer D before the caller sees it.
     """
     rule = expand_short_form(rule)
     role_to_axes: dict[AxisRole, list[str]] = defaultdict(list)

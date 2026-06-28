@@ -153,6 +153,11 @@ pandas users the one-column-per-field shape (`cat01` / `cat01_label`;
 `value` / `unit`); `rule=None` rows pass through unchanged and
 `to_flat()` is a no-op on them.
 
+Two output columns can map to one flat key (a column `unit` beside a `value`
+measure). The nested form is unaffected, so this surfaces only at `to_flat()`:
+a caller's rule raises a `FlatProjectionError` (rename a column), a built-in
+degrades to Layer D by the same provenance rule as an apply failure.
+
 ## Extension points
 
 | Want to add | Touch |

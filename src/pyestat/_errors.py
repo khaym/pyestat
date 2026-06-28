@@ -15,6 +15,10 @@ A second group, :class:`RuleAuthoringError` and its leaves
 that cannot be applied as authored. On the ``rule="auto"`` path such a
 failure surfaces or degrades to the lossless Layer D by the failing rule's
 provenance — see ARCHITECTURE.md (Failure policy: surface vs degrade).
+:class:`FlatProjectionError` shares that base and provenance routing but is
+not an apply failure — the nested result is valid — so a caller's rule
+surfaces it lazily from :meth:`StatsDataResponse.to_flat` (a built-in still
+degrades to Layer D).
 
 A third rule-level leaf, :class:`RuleLoadError`, reports a rule *file*
 that could not be read, parsed, or validated into a rule at all — distinct
@@ -212,6 +216,30 @@ class TimeFormatError(RuleAuthoringError):
         self.transform = transform
         self.reason = reason
         self.code = code
+
+
+class FlatProjectionError(RuleAuthoringError):
+    """Two output columns map to the same column once projected to flat form.
+
+    ``to_flat`` derives suffix columns the rule's own unique-column check cannot
+    see — ``{col}_label`` / ``{col}_code`` for a dimension or time cell, and the
+    bare ``unit`` a lone ``value`` measure carries — so a column named like
+    another's derived key collides: a column ``unit`` beside a ``value`` measure,
+    or a column ``X_label`` beside a dimension ``X``. The nested form is
+    unaffected (each cell sits under its own column), so a nested-only consumer
+    never meets this; only the flat projection cannot hold both. As a
+    :class:`RuleAuthoringError` it is routed by provenance: on the auto path a
+    built-in rule's collision degrades to Layer D before the caller sees it,
+    while a caller's rule keeps its valid nested result and raises this from
+    :meth:`StatsDataResponse.to_flat` so they can rename a column (ARCHITECTURE.md).
+    """
+
+    def __init__(self, *, key: str) -> None:
+        super().__init__(
+            f"flat projection collision on column {key!r}: two nested fields "
+            "map to the same flat key — rename one of the rule's output columns"
+        )
+        self.key = key
 
 
 class TooManyRowsError(EstatError):

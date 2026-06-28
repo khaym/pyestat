@@ -22,6 +22,7 @@ from __future__ import annotations
 import pytest
 
 from pyestat._engine.canonical import dimension, measure, time_cell, to_flat_rows
+from pyestat._errors import FlatProjectionError
 
 
 class TestConstructors:
@@ -119,11 +120,12 @@ class TestFlatProjection:
 
     def test_colliding_flat_keys_raise_instead_of_silently_overwriting(self) -> None:
         # A "value" measure flattens its unit to the bare `unit` key; a sibling
-        # column literally named "unit" also writes `unit`. The rule's own
-        # unique-column check cannot see these derived keys, so flatten guards
-        # the collision loudly rather than dropping one field by dict order.
+        # measure column named "unit" writes that same `unit` key as its value.
+        # The rule's own unique-column check cannot see these derived keys, so
+        # flatten guards the collision with a typed FlatProjectionError rather
+        # than dropping one field by dict order.
         rows = ({"value": measure("1", "人"), "unit": measure("x", None)},)
-        with pytest.raises(ValueError, match="collision"):
+        with pytest.raises(FlatProjectionError, match="collision"):
             to_flat_rows(rows)
 
     def test_flatten_is_idempotent(self) -> None:
