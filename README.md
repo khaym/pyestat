@@ -32,14 +32,16 @@ uv add /path/to/pyestat
 
 ## Usage
 
-Register for an `appId` at <https://www.e-stat.go.jp/api/>, then make it
-available as the `ESTAT_APP_ID` environment variable (or pass it
-explicitly to `EstatClient(app_id=...)`):
+Register for an `appId` at <https://www.e-stat.go.jp/api/>, then pass it
+explicitly to `EstatClient(app_id=...)`. A common convention is to keep it
+in an `ESTAT_APP_ID` environment variable and read it yourself:
 
 ```python
+import os
+
 from pyestat import EstatClient, EstatApiError
 
-client = EstatClient()  # reads ESTAT_APP_ID from the environment
+client = EstatClient(app_id=os.environ["ESTAT_APP_ID"])
 
 try:
     response = client.get_stats_data(stats_data_id="0003448237")
@@ -166,8 +168,10 @@ Every pyestat error inherits from `EstatError`, so a coarse
 
 ## Configuring the appId
 
-`pyestat` only reads `ESTAT_APP_ID` from `os.environ`. How that variable
-gets there is your project's call. A few common patterns:
+`pyestat` takes the appId explicitly via `EstatClient(app_id=...)` and never
+reads the environment itself. A common convention is to keep it in an
+`ESTAT_APP_ID` environment variable and pass `os.environ["ESTAT_APP_ID"]`;
+how that variable gets there is your project's call. A few common patterns:
 
 **Shell export** (interactive use):
 
@@ -185,9 +189,13 @@ echo 'ESTAT_APP_ID=<your-app-id>' > .env
 ```
 
 ```python
+import os
+
 from dotenv import load_dotenv
-load_dotenv()
 from pyestat import EstatClient
+
+load_dotenv()
+client = EstatClient(app_id=os.environ["ESTAT_APP_ID"])
 ```
 
 **Docker / Compose**: pass `-e ESTAT_APP_ID=...` or set it under
@@ -198,11 +206,10 @@ inject it as an env var in the workflow step.
 
 **Production**: pull it from your secret manager
 (AWS Secrets Manager / GCP Secret Manager / HashiCorp Vault / ...) at
-startup and set `os.environ["ESTAT_APP_ID"]` before constructing
-`EstatClient`.
+startup and pass it to `EstatClient(app_id=...)`.
 
-`pyestat` deliberately avoids bundling a dotenv loader so it does not
-constrain how you manage secrets.
+`pyestat` deliberately avoids reading the environment or bundling a dotenv
+loader, so it does not constrain how you manage secrets.
 
 ## Development
 
@@ -216,3 +223,7 @@ uv run pytest -m "not integration"   # unit only (no network)
 The live integration test under `tests/test_get_stats_data_integration.py`
 auto-skips if `ESTAT_APP_ID` is not set, so the unit suite stays
 hermetic without extra flags.
+
+## License
+
+MIT License. See [LICENSE](LICENSE) for details.
