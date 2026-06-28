@@ -1,6 +1,90 @@
-# pyestat
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/khaym/pyestat/main/assets/logo-dark.png">
+    <img src="https://raw.githubusercontent.com/khaym/pyestat/main/assets/logo.png" alt="pyestat" width="420">
+  </picture>
+</p>
 
-Python client for the [e-Stat API](https://www.e-stat.go.jp/api/) — the official portal for Japanese government statistics — with structured outputs for LLMs and data scientists.
+<p align="center">
+  <em>Structured, typed results from Japan's official statistics portal
+  (<a href="https://www.e-stat.go.jp/api/">e-Stat</a>) — ready for LLMs and data scientists.</em>
+</p>
+
+<p align="center">
+  <a href="https://pypi.org/project/pyestat/"><img src="https://img.shields.io/pypi/v/pyestat?color=082060" alt="PyPI version"></a>
+  <a href="https://pypi.org/project/pyestat/"><img src="https://img.shields.io/pypi/pyversions/pyestat?color=082060" alt="Python versions"></a>
+  <a href="https://github.com/khaym/pyestat/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT"></a>
+</p>
+
+<p align="center">
+  <a href="#why-another-e-stat-library">Why</a> &bull;
+  <a href="#install">Install</a> &bull;
+  <a href="#usage">Usage</a> &bull;
+  <a href="https://github.com/khaym/pyestat/blob/main/docs/AUTHORING_RULES.md">Writing rules</a> &bull;
+  <a href="#license">License</a>
+</p>
+
+<p align="center">
+  <b>English</b> &bull; <a href="https://github.com/khaym/pyestat/blob/main/README.ja.md">日本語</a>
+</p>
+
+## Why another e-Stat library?
+
+The e-Stat API returns JSON that is a thin re-encoding of the original XML:
+dimension codes hide under `@`-prefixed keys and the cell value under `$`, while
+the human-readable labels and units for those codes live in a separate
+`CLASS_INF` block you must join yourself. Logical errors arrive as HTTP 200 with
+a non-zero `RESULT.STATUS`. Existing Python wrappers stop at "give me a
+DataFrame" and pass these quirks through to the caller.
+
+`pyestat` resolves them. By default (`rule="auto"`) it classifies each axis and
+returns self-describing cells — no per-table rule required:
+
+```python
+# e-Stat's raw VALUE cell: codes only — labels and units live in CLASS_INF
+{"@cat01": "000", "@time": "2020000000", "$": "126146"}
+
+# pyestat (rule="auto"): codes resolved to labels, value carries its unit
+{"cat01": {"code": "000", "label": "男女計"},
+ "time":  {"code": "2020000000", "label": "2020年",
+           "normalized": "2020", "granularity": "yearly"},
+ "value": {"value": "126146", "unit": "千人"}}
+```
+
+So an LLM agent or a researcher consumes a response without learning the e-Stat
+wire format, joining `CLASS_INF` by hand, or special-casing the HTTP-200 error
+channel.
+
+### What you get
+
+**Find and fetch**
+
+- Search the catalog with `list_stats` (`searchWord`, `statsCode`, …).
+- Inspect a table's axes with `get_meta_info` before downloading anything.
+- Stream millions of rows page by page with `iter_stats_data_pages` — cap a
+  fetch up front with `max_rows` (raises `TooManyRowsError`) or follow it with a
+  `progress` callback.
+
+**Structure** (`rule="auto"`, the default — no rule needed)
+
+- Dimension codes resolved to `{code, label}` — `CLASS_INF` joined for you.
+- Time normalized, with granularity tagged (yearly / monthly / …).
+- A measure spread across rows folded into one record, key auto-detected — for
+  tables whose measure axis is flat (GDP, CPI, 建築着工 …). Hierarchical crosses
+  (trade's measure × period) and multi-category tables stay as lossless raw.
+- `aggregates="exclude"` drops subtotal/total rows for a sum-safe leaf grain
+  (`"only"` keeps just the totals), read from `@parentCode` — a fetch option, so
+  it works in any mode.
+- Your own `RuleV2` adds domain-specific column names and explicit pivots of
+  hierarchical crosses (`where` / `key` / `unit_from`).
+
+**Hand off**
+
+- `to_flat()` projects the nested cells to one column per field, for pandas.
+
+Throughout, values pass through verbatim — numbers stay strings and suppression
+markers (`-` / `***` / `X`) are preserved — e-Stat's HTTP-200 logical errors
+surface as a typed `EstatApiError`, and transient network failures are retried.
 
 ## Status
 
@@ -12,22 +96,12 @@ pyestat is pre-1.0. Two parts of the surface move at different speeds:
 - **Evolving** — what you *author*: the `RuleV2` rule schema may still
   change across 0.x as built-in coverage grows.
 
-## Why another e-Stat library?
-
-The e-Stat API ships JSON that is a thin re-encoding of the original XML schema:
-dimension codes live under `@`-prefixed keys, cell values live under `$`,
-and logical errors are reported with HTTP 200 plus a non-zero `RESULT.STATUS`.
-Existing Python wrappers stop at "give me a DataFrame" and pass these quirks
-through to the caller. `pyestat` flattens the encoding and surfaces typed
-results so an LLM agent or a researcher can consume responses without
-learning the e-Stat wire format.
-
 ## Install
 
-`pyestat` is not yet published to PyPI. For now, install from a local checkout:
-
 ```sh
-uv add /path/to/pyestat
+uv add pyestat
+# or
+pip install pyestat
 ```
 
 ## Usage
@@ -80,14 +154,11 @@ Pass `rule=None` instead to get e-Stat's raw rows unchanged (`@`-prefixed
 dimensions become plain keys, `"$"` becomes `"value"`) — flat scalars, no
 labels or normalization.
 
-## Supplying your own rules
+## Writing your own rules
 
-`pyestat` ships built-in transformation rules for a small set of
-tables; pass `user_rules=` to override them or add coverage for a
-table that has none. A rule declares the **output columns** you want,
-each drawn from an axis *role* the classifier infers — so one rule
-covers every table sharing that role pattern. A user rule matching a
-table's role pattern shadows a built-in for the same pattern:
+`pyestat` ships built-in rules for a small set of tables and falls back to
+`rule="auto"` for the rest. When you want different structuring — or
+domain-specific column names — supply your own `RuleV2`:
 
 ```python
 from pyestat import EstatClient, RuleV2
@@ -96,67 +167,22 @@ custom = RuleV2.model_validate({
     "schema_version": "2",
     "match": {"role_pattern": ["value", "area", "time"]},
     "output": [
-        {"column": "year",   "source": {"role": "time"},  "transform": "yearly"},
-        {"column": "region", "source": {"role": "area"},  "transform": "passthrough"},
-        {"column": "value",  "source": {"role": "value"}, "transform": "passthrough"},
+        {"column": "year",   "source": {"role": "time"}, "transform": "yearly"},
+        {"column": "region", "source": {"role": "area"}},
+        {"column": "value",  "source": {"role": "value"}},
     ],
 })
 
 client = EstatClient(user_rules=[custom])
 ```
 
-### Folding spread rows into one record (pivot)
+A rule declares the **output columns** you want, each drawn from an axis *role*
+the classifier infers, so one rule covers every table sharing that role pattern.
+Pivoting rows split across a `meta-axis`, naming columns for `to_flat()`, and
+dropping rule files into a directory are covered in
+**[Writing rules →](https://github.com/khaym/pyestat/blob/main/docs/AUTHORING_RULES.md)**.
 
-Some tables split one logical record across several rows — a `meta-axis`
-the classifier flags, such as foreign trade's quantity / amount / unit. A
-`where` predicate on a `meta-axis` source folds those rows by the remaining
-axes and selects each measure into its own column, matching on the member
-**name** (not its opaque code):
-
-```python
-trade = RuleV2.model_validate({
-    "schema_version": "2",
-    "match": {"role_pattern": ["category", "meta-axis", "area", "time"]},
-    "output": [
-        {"column": "cat01", "source": {"role": "category"}},
-        {"column": "area",  "source": {"role": "area"}},
-        {"column": "time",  "source": {"role": "time"}, "transform": "yearly"},
-        {"column": "amount_jpy", "source": {"role": "meta-axis", "where": {"equals": "合計_金額"}}},
-        {"column": "quantity",   "source": {"role": "meta-axis", "where": {"equals": "合計_数量2"}}},
-        {"column": "unit",       "source": {"role": "meta-axis", "where": {"equals": "単位2"}}},
-    ],
-})
-```
-
-A measure absent from a group (e.g. a series retired in a base-year
-revision) yields `None` for that column rather than dropping the record, so
-the output shape stays stable across table versions. Conversely, a `where`
-predicate is a projection: meta-axis members you do not select (e.g. a
-table's monthly breakdowns when you keep only the annual totals) are dropped
-from the output — declare a column for every member you need.
-
-### Naming output columns for `to_flat()`
-
-`to_flat()` derives suffix columns from each cell — `{col}_label`, a time
-column's `{col}_code` / `{col}_granularity`, and the bare `unit` that a column
-named exactly `value` carries. Pick output names so none equals another's
-derived key: a `unit` column alongside a `value` measure, or a `region_label`
-column alongside a dimension `region`, collide in the flat shape. The nested
-form is never affected, so `response.values` always works; only `to_flat()` is
-constrained. For your own rule a collision raises a typed error naming the
-column to rename; a built-in that would collide degrades to raw output instead,
-so it never lands on you. (A `unit` column is fine when no `value` measure
-shares the row, as in the pivot above.)
-
-You can also drop rule files in a directory instead of building them in
-Python: `EstatClient` discovers `./pyestat_rules/*.yaml` (and `.yml`) by
-file placement alone — no registration call. Each file is the same schema
-as the `RuleV2` above, written as YAML.
-
-- Relocate the directory with `project_rules_dir=`, or opt out with
-  `None` / `""`.
-- An invalid rule file raises a typed `EstatError` at construction, so a
-  typo surfaces immediately rather than at query time.
+> The `RuleV2` schema is evolving across 0.x — see [Status](#status).
 
 ## Error behavior
 
@@ -164,10 +190,10 @@ On the default `rule="auto"` path, whether a *rule* failure reaches you
 turns on who authored the failing rule — fall back when it is pyestat's,
 surface when it is yours:
 
-- A **built-in** rule that cannot apply degrades to lossless raw output
+- A built-in rule that cannot apply degrades to lossless raw output
   instead of raising: its failure is internal and you cannot edit it, so
   preserved data beats a crash.
-- A rule **you** supplied — an explicit `rule=RuleV2(...)`, a
+- A rule you supplied — an explicit `rule=RuleV2(...)`, a
   `user_rules=` entry, or a file in `./pyestat_rules` — that cannot apply
   raises a typed error so you can fix it and re-run.
 
@@ -181,10 +207,9 @@ Every pyestat error inherits from `EstatError`, so a coarse
 
 ## Configuring the appId
 
-`pyestat` takes the appId explicitly via `EstatClient(app_id=...)` and never
-reads the environment itself. A common convention is to keep it in an
-`ESTAT_APP_ID` environment variable and pass `os.environ["ESTAT_APP_ID"]`;
-how that variable gets there is your project's call. A few common patterns:
+[Usage](#usage) shows the basic convention — pass `app_id` explicitly, kept in
+an `ESTAT_APP_ID` variable. How that variable reaches the environment is your
+project's call; a few common patterns:
 
 **Shell export** (interactive use):
 
@@ -239,4 +264,4 @@ hermetic without extra flags.
 
 ## License
 
-MIT License. See [LICENSE](LICENSE) for details.
+MIT License. See [LICENSE](https://github.com/khaym/pyestat/blob/main/LICENSE) for details.
