@@ -37,8 +37,8 @@ the human-readable labels and units for those codes live in a separate
 a non-zero `RESULT.STATUS`. Existing Python wrappers stop at "give me a
 DataFrame" and pass these quirks through to the caller.
 
-`pyestat` resolves them. By default (`rule="auto"`) it classifies each axis and
-returns self-describing cells — no per-table rule required:
+`pyestat` resolves them. With no per-table setup, each code comes back joined to
+its label and each value to its unit (the default, `rule="auto"`):
 
 ```python
 # e-Stat's raw VALUE cell: codes only — labels and units live in CLASS_INF
@@ -51,40 +51,63 @@ returns self-describing cells — no per-table rule required:
  "value": {"value": "126146", "unit": "千人"}}
 ```
 
+And where e-Stat splits one observation across rows — one row per measure — it
+folds them back into a single record, one column per measure:
+
+```python
+# e-Stat: each measure on its own row, sharing the same time
+{"@time": "2020000000", "@tab": "001", "$": "16"}                     # 数量
+{"@time": "2020000000", "@tab": "002", "$": "35220", "@unit": "千円"}  # 金額
+
+# pyestat (rule="auto"): one record, the measures pivoted into columns
+{"time": {"code": "2020000000", "label": "2020年",
+          "normalized": "2020", "granularity": "yearly"},
+ "数量": {"value": "16",    "unit": None},
+ "金額": {"value": "35220", "unit": "千円"}}
+```
+
 So an LLM agent or a researcher consumes a response without learning the e-Stat
-wire format, joining `CLASS_INF` by hand, or special-casing the HTTP-200 error
-channel.
+wire format, joining `CLASS_INF` by hand, reshaping rows, or special-casing the
+HTTP-200 error channel.
 
 ### What you get
 
-**Find and fetch**
+**Find and fetch the table you need**
 
-- Search the catalog with `list_stats` (`searchWord`, `statsCode`, …).
-- Inspect a table's axes with `get_meta_info` before downloading anything.
-- Stream millions of rows page by page with `iter_stats_data_pages` — cap a
-  fetch up front with `max_rows` (raises `TooManyRowsError`) or follow it with a
-  `progress` callback.
+- Search the catalog by keyword or code — `list_stats` (`searchWord`,
+  `statsCode`, …).
+- Look at a table's axes before you download it — `get_meta_info`.
+- Pull a large table without loading it all into memory — `iter_stats_data_pages`
+  yields one page at a time. Stop a runaway query before it downloads with
+  `max_rows` (raises `TooManyRowsError`), and track a long pull with a `progress`
+  callback.
 
-**Structure** (`rule="auto"`, the default — no rule needed)
+**Get back data you can use, not codes to decode**
 
-- Dimension codes resolved to `{code, label}` — `CLASS_INF` joined for you.
-- Time normalized, with granularity tagged (yearly / monthly / …).
-- A measure spread across rows folded into one record, key auto-detected — for
-  tables whose measure axis is flat (GDP, CPI, 建築着工 …). Hierarchical crosses
-  (trade's measure × period) and multi-category tables stay as lossless raw.
-- `aggregates="exclude"` drops subtotal/total rows for a sum-safe leaf grain
-  (`"only"` keeps just the totals), read from `@parentCode` — a fetch option, so
-  it works in any mode.
-- Your own `RuleV2` adds domain-specific column names and explicit pivots of
-  hierarchical crosses (`where` / `key` / `unit_from`).
+*The default — `rule="auto"`, no rule to write.*
 
-**Hand off**
+- Read `男女計`, not `000` — every code arrives with its label, the `CLASS_INF`
+  lookup already done.
+- Sort and group on time directly — dates come back normalized with their
+  granularity tagged (`2020`, yearly / monthly / …).
+- Treat one observation as one row — when e-Stat spreads a measure across several
+  rows, you get them back together, each measure in its own column to read across
+  (GDP, CPI, housing starts, trade). A table pyestat can't structure yet comes
+  back as plain raw rows, never an error.
+- Keep only the figures you want to sum — `aggregates="exclude"` drops the
+  subtotal and total rows, `"only"` keeps just the totals.
 
-- `to_flat()` projects the nested cells to one column per field, for pandas.
+**Hand off to your tools**
 
-Throughout, values pass through verbatim — numbers stay strings and suppression
-markers (`-` / `***` / `X`) are preserved — e-Stat's HTTP-200 logical errors
-surface as a typed `EstatApiError`, and transient network failures are retried.
+- Get one column per field for pandas and friends — `to_flat()`.
+
+Hit a table pyestat doesn't fold yet, or want column names of your own? That is a
+short rule away — see [Writing your own rules](#writing-your-own-rules).
+
+Throughout, the numbers are never rewritten: they stay strings, and e-Stat's
+suppression markers (`-` / `***` / `X`) are preserved as-is. e-Stat's habit of
+reporting errors as HTTP 200 surfaces as a typed `EstatApiError`, and dropped
+connections are retried for you.
 
 ## Status
 
