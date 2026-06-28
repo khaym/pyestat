@@ -43,7 +43,7 @@ from pyestat._engine.time import (
     quarterly_e_stat,
     yearly,
 )
-from pyestat.errors import RuleExpansionError
+from pyestat._errors import RuleExpansionError
 
 
 # A transform maps one source value to its output cell. Kept deliberately

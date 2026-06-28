@@ -24,7 +24,7 @@ from pyestat._engine.role_defaults import (
     build_generic_rule,
     default_transform,
 )
-from pyestat.errors import RoleResolutionError
+from pyestat._errors import RoleResolutionError
 
 
 class TestTransformRegistry:

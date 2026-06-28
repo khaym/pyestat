@@ -23,7 +23,7 @@ from pyestat._engine.classifier import AxisRole
 from pyestat._engine.loader import YamlRuleLoader
 from pyestat._engine.role_defaults import expand_short_form
 from pyestat._engine.rule import RuleV2
-from pyestat.errors import RuleExpansionError, RuleLoadError
+from pyestat._errors import RuleExpansionError, RuleLoadError
 
 
 # A minimum long-form rule: every column names its source role and

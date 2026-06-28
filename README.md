@@ -142,8 +142,8 @@ as the `RuleV2` above, written as YAML.
 
 - Relocate the directory with `project_rules_dir=`, or opt out with
   `None` / `""`.
-- An invalid rule file raises `RuleLoadError` at construction, so a typo
-  surfaces immediately rather than at query time.
+- An invalid rule file raises a typed `EstatError` at construction, so a
+  typo surfaces immediately rather than at query time.
 
 ## Error behavior
 
@@ -164,7 +164,7 @@ reported.
 
 Every pyestat error inherits from `EstatError`, so a coarse
 `except EstatError` catches them all; catch a leaf (`EstatApiError`,
-`RuleLoadError`, …) when you want to act on one case.
+`TooManyRowsError`, …) when you want to act on one case.
 
 ## Configuring the appId
 

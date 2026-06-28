@@ -23,7 +23,7 @@ from pyestat._engine.classifier import (
 )
 from pyestat._engine.resolver import RuleLayer, resolve_v2
 from pyestat._engine.rule import RuleV2
-from pyestat.errors import AmbiguousRuleError
+from pyestat._errors import AmbiguousRuleError
 
 
 def _axis(

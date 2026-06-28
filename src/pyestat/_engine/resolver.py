@@ -34,7 +34,7 @@ from pyestat._endpoint import ClassObj
 from pyestat._engine.classifier import Confidence, TableClassification
 from pyestat._engine.role_defaults import build_generic_rule
 from pyestat._engine.rule import RuleV2
-from pyestat.errors import AmbiguousRuleError
+from pyestat._errors import AmbiguousRuleError
 
 
 class RuleLayer(Enum):

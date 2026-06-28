@@ -29,7 +29,7 @@ import yaml
 from pyestat._endpoint import EstatClient
 from pyestat._http import EstatHttpClient
 from pyestat._engine.rule import RuleV2
-from pyestat.errors import (
+from pyestat._errors import (
     RoleResolutionError,
     RuleLoadError,
     TimeFormatError,

@@ -14,7 +14,7 @@ import pytest
 from pyestat._engine.apply import AxisBinding, _bind_axis
 from pyestat._engine.classifier import AxisRole
 from pyestat._engine.rule import OutputColumn
-from pyestat.errors import RoleResolutionError
+from pyestat._errors import RoleResolutionError
 
 
 def _col(column: str, role: str, axis: str | None = None, transform: str = "passthrough") -> OutputColumn:

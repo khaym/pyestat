@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 from pyestat._http import EstatHttpClient, ProgressEvent
-from pyestat.errors import EstatApiError, TooManyRowsError
+from pyestat._errors import EstatApiError, TooManyRowsError
 
 if TYPE_CHECKING:
     from pyestat._engine.rule import RuleV2

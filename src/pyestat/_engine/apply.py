@@ -26,7 +26,7 @@ from pyestat._engine.registry import RegistryKeyError
 from pyestat._engine.resolver import ResolvedRule
 from pyestat._engine.role_defaults import TIME_PARSERS, TRANSFORMS, expand_short_form
 from pyestat._engine.rule import MetaWhere, OutputColumn, RuleV2
-from pyestat.errors import (
+from pyestat._errors import (
     RoleResolutionError,
     RuleAuthoringError,
     TimeFormatError,

@@ -23,7 +23,7 @@ from pyestat._engine.apply import (
     _subgroup_by_grain,
 )
 from pyestat._engine.classifier import AxisRole
-from pyestat.errors import RoleResolutionError
+from pyestat._errors import RoleResolutionError
 
 
 def _err(n: int) -> RoleResolutionError:

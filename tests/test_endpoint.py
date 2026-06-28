@@ -23,7 +23,7 @@ from pyestat._endpoint import (
     StatsListResponse,
 )
 from pyestat._http import EstatHttpClient, ProgressEvent
-from pyestat.errors import EstatApiError, TooManyRowsError
+from pyestat._errors import EstatApiError, TooManyRowsError
 
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures"

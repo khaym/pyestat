@@ -15,7 +15,7 @@ from typing import Any
 
 import httpx
 
-from pyestat.errors import HttpRetryExhaustedError
+from pyestat._errors import HttpRetryExhaustedError
 
 
 DEFAULT_BASE_URL = "https://api.e-stat.go.jp/rest/3.0/app/json"

@@ -15,7 +15,7 @@ from pydantic import ValidationError
 
 from pyestat._engine.role_defaults import expand_short_form
 from pyestat._engine.rule import RuleV2
-from pyestat.errors import RuleLoadError
+from pyestat._errors import RuleLoadError
 
 
 # v2 is the only schema the engine speaks; the never-published v1 was

@@ -30,7 +30,7 @@ from pyestat._engine.classifier import (
     TableClassification,
 )
 from pyestat._engine.rule import RuleV2
-from pyestat.errors import (
+from pyestat._errors import (
     EstatError,
     RoleResolutionError,
     RuleAuthoringError,

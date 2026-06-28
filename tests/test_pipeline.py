@@ -16,7 +16,7 @@ import pytest
 from pyestat._endpoint import ClassObj
 from pyestat._engine.pipeline import run_pipeline
 from pyestat._engine.rule import RuleV2
-from pyestat.errors import RuleAuthoringError
+from pyestat._errors import RuleAuthoringError
 
 
 def _classobj(axis_id: str, name: str, members: list[dict[str, Any]]) -> ClassObj:
