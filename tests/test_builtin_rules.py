@@ -1,16 +1,16 @@
 """Tests for the library-bundled rules.
 
-#30 retired the never-published v1 built-in rules. The auto path now
+The never-published v1 built-in rules were retired. The auto path now
 structures most benchmark tables generically (Layer A folds GDP and the
 population estimates without a rule), so the bundle ships only the table
 Layer A cannot fold on its own: foreign trade, whose ``cat02`` axis is a
-hierarchical measure×period cross (#34 routes a hierarchical meta-axis to
-Layer D; this built-in reshapes it with the #37/#39 modifiers).
+hierarchical measure×period cross (Layer A routes a hierarchical meta-axis to
+Layer D; this built-in reshapes it with the meta-axis modifiers).
 
 These tests pin the loader contract, that the trade rule is matched at the
 BUILTIN layer for its family, and that it folds the cross into self-describing
 month rows — and that ``match.stats_code`` keeps it from claiming a
-structurally identical table from another survey (#29).
+structurally identical table from another survey.
 """
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ _TRADE_PATTERN = [AxisRole.CATEGORY, AxisRole.META_AXIS, AxisRole.AREA, AxisRole
 _TRADE_STATS_CODE = "00350300"
 
 
-# A faithful slice of trade's cat02 (#37/#39): two grain-less unit members
+# A faithful slice of trade's cat02: two grain-less unit members
 # whose *value* is the unit string, three measure-family totals (level 1), and
 # the level-2 month members hung under each family by @parentCode. One logical
 # record (commodity 0101 × country 50103 × year 2026) is spread across it.
@@ -65,7 +65,7 @@ _TRADE_CLASSIFICATION = TableClassification((
 # Modeled on the real table (0004049306): 単位1 is *defined in the metadata but
 # ships no data row* — most commodities report only the 第2数量, so e-Stat omits
 # the 単位1 observation. So 数量1 has a value but no unit member to read; the rule
-# must still emit quantity1 with unit None (the #39 graceful path), not drop it.
+# must still emit quantity1 with unit None (the graceful unit path), not drop it.
 _TRADE_ROWS = (
     {"cat01": "0101", "cat02": "110", "area": "50103", "time": "2026000000", "value": "ＮＯ"},
     {"cat01": "0101", "cat02": "120", "area": "50103", "time": "2026000000", "value": "11"},
@@ -93,10 +93,10 @@ class TestBuiltinRuleContract:
         assert all(isinstance(r, RuleV2) for r in load_builtin_rules())
 
     def test_bundle_covers_foreign_trade(self) -> None:
-        # Flips the post-#30 "bundle is empty" pin: trade is the one benchmark
+        # Flips the earlier "bundle is empty" pin: trade is the one benchmark
         # table Layer A declines (hierarchical meta-axis → Layer D), so it must
         # ship a built-in. Matched by the role pattern the live table classifies
-        # to, and scoped to the trade statsCode (#29).
+        # to, and scoped to the trade statsCode.
         rule = _trade_rule()
         assert rule.match.stats_code == _TRADE_STATS_CODE
 
@@ -106,7 +106,7 @@ class TestBuiltinBundleIsUnambiguous:
 
     A built-in collision is a packaging defect, not a caller error: the
     resolver degrades a same-layer built-in conflict to Layer D rather than
-    raise (``docs/DESIGN.md`` Decision B — an internal cause falls back, only
+    raise (ARCHITECTURE.md — an internal cause falls back, only
     a caller-authored conflict surfaces). So a duplicate would silently lose
     the structure both rules meant to add, with no exception to flag it. This
     guard fails the build instead, so the conflict is caught before release.
@@ -142,7 +142,7 @@ class TestBuiltinBundleIsUnambiguous:
 class TestForeignTradeBuiltin:
     """The bundled trade rule folds cat02's measure×period cross into one row
     per month, each measure self-describing ({value, unit}): quantities carry
-    the unit shipped as a 単位 member (#39), the amount keeps its own @unit.
+    the unit shipped as a 単位 member, the amount keeps its own @unit.
     This is the table Layer A cannot fold, so the built-in is what makes trade
     structured on the auto path."""
 
@@ -197,7 +197,7 @@ class TestForeignTradeBuiltin:
         assert jan["country"] == {"code": "50103", "label": "50103"}
         assert jan["year"]["normalized"] == "2026"
         assert jan["year"]["granularity"] == "yearly"
-        # 数量2 carries the unit broadcast from its 単位2 member (#39); the amount
+        # 数量2 carries the unit broadcast from its 単位2 member; the amount
         # keeps its own @unit. 数量1's unit member (単位1) ships no data row on the
         # real table, so quantity1 keeps its value but reports unit None — the
         # graceful path, not a dropped column. Year totals (合計_*) do not leak
@@ -230,7 +230,7 @@ class TestForeignTradeBuiltin:
 # statsCode 00350300's second structural group — 税関別 品別国別表 — is the same
 # measure×period cross plus a 税関 (cat03) axis, so it classifies as
 # [category, meta-axis, category, area, time] (verified against 0003258368). Two
-# category axes (品目 cat01 / 税関 cat03) need axis-id addressing (#38) to map each
+# category axes (品目 cat01 / 税関 cat03) need axis-id addressing to map each
 # to its own column; the fold is otherwise identical to the 品別国別表 group.
 _CUSTOMS_PATTERN = [
     AxisRole.CATEGORY, AxisRole.META_AXIS, AxisRole.CATEGORY, AxisRole.AREA, AxisRole.TIME,
@@ -264,7 +264,7 @@ def _customs_rule() -> RuleV2:
 
 class TestForeignTradeCustomsBuiltin:
     """The 税関別 sibling rule folds the same cross while carrying the 税関 axis as
-    its own column (#38). Covering both structural groups makes the whole trade
+    its own column. Covering both structural groups makes the whole trade
     family (00350300) structured on the auto path — and exercises the built-in
     mechanism on a real two-category-axis table."""
 

@@ -1,4 +1,4 @@
-"""Tests for the role-default registry and v2 transform registry (#22).
+"""Tests for the role-default registry and v2 transform registry.
 
 This is the Layer A substance: the named transforms a v2 rule may
 reference, and the per-role defaults that fill a short-form rule's gaps.
@@ -30,7 +30,7 @@ from pyestat.errors import RoleResolutionError
 class TestTransformRegistry:
     def test_minimum_registered_transforms(self) -> None:
         # Done scopes the registry to "passthrough + the existing time
-        # parsers"; #4 adds iso8601 / jis_x_0401 later. Pinning the floor
+        # parsers" adds iso8601 / jis_x_0401 later. Pinning the floor
         # so that expansion does not depend on transforms not yet shipped.
         names = set(TRANSFORMS.names())
         assert {"passthrough", "monthly_e_stat", "quarterly_e_stat", "yearly",
@@ -41,7 +41,7 @@ class TestTransformRegistry:
 
     def test_named_time_parser_emits_normalized_string(self) -> None:
         # Decision 3: a v2 time column yields the normalized string only
-        # (the v1 companion _code / _granularity columns are #29's job).
+        # (the v1 companion _code / _granularity columns are not emitted).
         assert TRANSFORMS.resolve("yearly")("2020000000") == "2020"
         assert TRANSFORMS.resolve("monthly_e_stat")("2020000505") == "2020-05"
 
@@ -125,7 +125,7 @@ class TestBuildGenericRule:
     must route to Layer D.
 
     Business rule: Layer A structures any table whose axes it can address. A
-    role that repeats across axes (建築主 × 用途) is no longer a blocker (#38) —
+    role that repeats across axes (建築主 × 用途) is no longer a blocker —
     each axis gets its own id-addressed column. A meta-axis is handled by the
     pivot path (see TestBuildGenericPivot); only an ``unknown`` axis (the
     classifier's route-to-D sentinel) or a column-name collision still makes a
@@ -165,7 +165,7 @@ class TestBuildGenericRule:
         rule = build_generic_rule(clf)
         assert rule is not None
         rows = ({"time": "2020000000", "tab": "020", "value": "126146"},)
-        # The built rule applies directly, emitting canonical cells (#35):
+        # The built rule applies directly, emitting canonical cells:
         # a time object and a {value,unit} measure (no unit on this row).
         assert apply_v2_rule(rows, clf, rule) == ({
             "time": {"code": "2020000000", "label": "2020000000",
@@ -192,9 +192,9 @@ class TestBuildGenericRule:
         assert build_generic_rule(clf) is None
 
     def test_repeated_role_yields_one_axis_addressed_column_each(self) -> None:
-        # #38: 賃金 (職種 × 企業規模) and the like carry two category axes. Each
+        # 賃金 (職種 × 企業規模) and the like carry two category axes. Each
         # becomes its own column, addressed by axis id — the value column reads
-        # the observation, the rest read their own axis. (Before #38 this whole
+        # the observation, the rest read their own axis. (Earlier this whole
         # table declined to Layer D for want of a way to tell the two apart.)
         clf = TableClassification((
             _axis("time", AxisRole.TIME),
@@ -254,7 +254,7 @@ class TestBuildGenericRule:
         # Population 0000150007 (category, area, time — no tab axis): the
         # observation cell exists on every e-Stat row regardless of whether a
         # tab axis describes it, so the generic rule must always declare a
-        # "value" column. Before #33 it was declared only when an axis carried
+        # "value" column. Earlier it was declared only when an axis carried
         # the VALUE role, and 124k observations silently vanished.
         clf = TableClassification((
             _axis("cat01", AxisRole.CATEGORY),
@@ -288,9 +288,9 @@ class TestBuildGenericRule:
         assert build_generic_rule(clf) is None
 
     def test_generic_output_keeps_unit_and_labels(self) -> None:
-        # GDP 0003364993 (value, category, time): the canonical cells (#35)
+        # GDP 0003364993 (value, category, time): the canonical cells
         # carry the row's unit (10億円) and the category's display label.
-        # Pinned as #33's regression — the pre-#35 generic path dropped both,
+        # Regression guard — the earlier generic path dropped both,
         # leaving raw codes that an LLM agent cannot interpret.
         clf = TableClassification((
             _axis("tab", AxisRole.VALUE),
@@ -305,12 +305,12 @@ class TestBuildGenericRule:
         out = apply_v2_rule(rows, clf, rule, class_objs=objs)
         assert out[0]["value"] == {"value": "18747.1", "unit": "10億円"}
         assert out[0]["cat01"] == {"code": "11", "label": "1.国内FISIM産出額"}
-        # The fiscal-year wire shape resolves as the April-start span (#33).
+        # The fiscal-year wire shape resolves as the April-start span.
         assert out[0]["time"]["normalized"] == "1995-04"
         assert out[0]["time"]["granularity"] == "yearly"
 
 
-# A trade-like table (#17 pattern 2): cat02 is the meta-axis whose members
+# A trade-like table (pattern 2): cat02 is the meta-axis whose members
 # (単位2 / 合計_数量2 / 合計_金額) each spread one logical (cat01, area, time)
 # record across rows. Auto-pivoting folds them back into one record.
 _TRADE_CLF = TableClassification((
@@ -325,13 +325,13 @@ _TRADE_META = (
 
 
 class TestBuildGenericPivot:
-    """Business rule (#34): a table with exactly one meta-axis is no longer
+    """Business rule: a table with exactly one meta-axis is no longer
     declined — Layer A auto-generates a *pivot* rule that folds the meta-axis
     members into one record per non-meta group, so an uncovered meta-axis
     table comes back folded (1 row per logical record) rather than spread.
     The meta-axis member names become the pivot's columns; the non-meta axes
     stay 1:1, each addressed by its axis id so a repeated non-meta role (建築主 ×
-    用途, #38) folds rather than declining. The decline conditions that would
+    用途) folds rather than declining. The decline conditions that would
     risk a wrong or raising rule (≥2 meta-axes, a column-name collision, or
     missing member names) still route to Layer D.
     """
@@ -353,7 +353,7 @@ class TestBuildGenericPivot:
 
     def test_built_pivot_rule_folds_rows_directly(self) -> None:
         # What Layer A builds applies directly (no separate load/expand) and
-        # folds the three meta rows of a group into one record (#35 cells).
+        # folds the three meta rows of a group into one record (canonical cells).
         rule = build_generic_rule(_TRADE_CLF, _TRADE_META)
         assert rule is not None
         rows = (
@@ -372,7 +372,7 @@ class TestBuildGenericPivot:
     def test_pivot_rule_emits_no_bare_value_column(self) -> None:
         # On the pivot shape the observation lives in each member's
         # where-column; a bare "value" column would read an arbitrary group
-        # representative's cell. #33's observation column is appended only
+        # representative's cell. The observation column is appended only
         # on the 1:1 (no-meta) shape.
         rule = build_generic_rule(_TRADE_CLF, _TRADE_META)
         assert rule is not None
@@ -400,7 +400,7 @@ class TestBuildGenericPivot:
         assert build_generic_rule(clf, objs) is None
 
     def test_repeated_nonmeta_role_with_meta_axis_pivots(self) -> None:
-        # #38: 建築着工 (建築主 × 用途 + 測定量 meta + time). Two category axes
+        # 建築着工 (建築主 × 用途 + 測定量 meta + time). Two category axes
         # alongside the meta-axis no longer decline — each is addressed by its
         # axis id and grouped, while the meta-axis folds into where-columns.
         clf = TableClassification((
@@ -421,10 +421,10 @@ class TestBuildGenericPivot:
         assert cols["合計_金額"].source.where.equals == "合計_金額"
 
     def test_building_starts_folds_measures_into_columns(self) -> None:
-        # The headline #38 case (0003114490): 測定量 (tab) is the meta-axis over
+        # The headline case (0003114490): 測定量 (tab) is the meta-axis over
         # three measures; 建築主 (cat01) and 用途 (cat03) are two category axes,
         # plus area and time. Auto must group by (建築主, 用途, area, time) and
-        # fold the three measures into one record — the shape that before #38
+        # fold the three measures into one record — the shape that earlier
         # fell to Layer D, leaving the table spread one row per measure.
         clf = TableClassification((
             _axis("tab", AxisRole.META_AXIS),
@@ -469,7 +469,7 @@ class TestBuildGenericPivot:
         assert build_generic_rule(_TRADE_CLF, objs) is None
 
     def test_duplicate_member_names_coalesce_into_one_column(self) -> None:
-        # 賃金構造 "DB" tables (#41): the meta-axis carries each measure twice —
+        # 賃金構造 "DB" tables: the meta-axis carries each measure twice —
         # codes 01/02 and 33/34 share names+units. The pair is a code-scheme
         # vintage, not a second dimension, so rather than declining the whole
         # table Layer A folds same-named members into ONE column per distinct
@@ -535,7 +535,7 @@ class TestBuildGenericPivot:
         # values are not a vintage dual-coding but a genuine collision (no
         # single cell to surface). The fold raises a typed error, which the
         # auto path turns into a Layer D fallback — the same safe decline the
-        # whole table took before #41, now scoped to the conflicting cell.
+        # whole table took earlier, now scoped to the conflicting cell.
         objs = (_classobj("cat02", [("01", "年齢"), ("33", "年齢")]),)
         rule = build_generic_rule(_TRADE_CLF, objs)
         assert rule is not None
@@ -549,7 +549,7 @@ class TestBuildGenericPivot:
             apply_v2_rule(rows, _TRADE_CLF, rule, class_objs=objs)
 
     def test_value_role_coexisting_with_meta_axis_declines(self) -> None:
-        # #34 F1: a meta-axis already spreads the measures across rows. A
+        # A meta-axis already spreads the measures across rows. A
         # single-member tab (VALUE) alongside it would emit a spurious `value`
         # 1:1 column that, after grouping, reads an arbitrary group member's
         # cell (rows[0]) — a non-deterministic, duplicate column. Decline to
@@ -562,11 +562,11 @@ class TestBuildGenericPivot:
         assert build_generic_rule(clf, _TRADE_META) is None
 
     def test_hierarchical_meta_axis_declines(self) -> None:
-        # #34 flatness gate: a meta-axis whose members carry a code hierarchy
+        # Flatness gate: a meta-axis whose members carry a code hierarchy
         # (@level/@parentCode) folds a second dimension into its members —
         # trade's 合計/月次 × 数量/金額. Flat-pivoting it would spread that
         # hidden dimension into columns, so Layer A declines (→ Layer D); the
-        # precise reshape is a rule's job (#37), not the generic auto path.
+        # precise reshape is a rule's job, not the generic auto path.
         objs = (_classobj_hier("cat02", [
             ("120", "合計_数量", "1", None),
             ("150", "1月_数量", "2", "120"),

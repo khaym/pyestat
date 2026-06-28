@@ -1,4 +1,4 @@
-"""Tests for resolving an output column to a concrete axis (#38, #40).
+"""Tests for resolving an output column to a concrete axis.
 
 ``_bind_axis`` owns the addressing rule the engine had split across role- and
 id-based paths: a column names an axis id, or — naming none — falls back to the

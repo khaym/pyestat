@@ -12,14 +12,9 @@ transport- and query-level distinctions callers act on:
 A second group, :class:`RuleAuthoringError` and its leaves
 (:class:`RoleResolutionError`, :class:`RuleExpansionError`,
 :class:`UnknownTransformError`, :class:`TimeFormatError`), reports a rule
-that cannot be applied as authored. On the ``rule="auto"`` path, whether such a failure surfaces or
-quietly degrades to the lossless Layer D fallback turns on *who authored
-the failing rule*: a rule the caller passed or wrote (an explicit
-``rule=``, or a user / project rule) surfaces so they can fix it; a
-library-provided rule (a built-in, or the generic rule derived from axis
-roles) degrades, since the caller cannot fix it and preserved raw data
-beats a crash. See ``docs/DESIGN.md`` Decision B for the full policy and
-its decision table.
+that cannot be applied as authored. On the ``rule="auto"`` path such a
+failure surfaces or degrades to the lossless Layer D by the failing rule's
+provenance — see ARCHITECTURE.md (Failure policy: surface vs degrade).
 
 A third rule-level leaf, :class:`RuleLoadError`, reports a rule *file*
 that could not be read, parsed, or validated into a rule at all — distinct
@@ -115,7 +110,7 @@ class RuleLoadError(EstatError):
     be *applied* to a particular table. Wrapping the underlying ``yaml`` /
     ``pydantic`` / ``OSError`` in a typed error keeps the coarse
     ``except EstatError`` contract whole for a caller who dropped a bad file
-    in their project rules directory (#15).
+    in their project rules directory.
     """
 
     def __init__(self, *, path: object, reason: str) -> None:
@@ -130,13 +125,10 @@ class RuleAuthoringError(EstatError):
     The shared base of the ways a single rule fails at apply time —
     :class:`RoleResolutionError`, :class:`RuleExpansionError`,
     :class:`UnknownTransformError`, and :class:`TimeFormatError`. Grouping
-    them lets the ``rule="auto"``
-    path catch the whole category in one place and route it by provenance
-    (a caller-authored rule surfaces, a library-provided one degrades to
-    Layer D — see ``docs/DESIGN.md`` Decision B), and lets a caller catch
-    the category with a single ``except``. Whether such an error reaches
-    the caller therefore depends on who authored the rule, not on the leaf
-    type.
+    them lets the ``rule="auto"`` path catch the whole category in one place
+    and route it by provenance (ARCHITECTURE.md), and lets a caller catch the
+    category with a single ``except``. Whether such an error reaches the
+    caller depends on who authored the rule, not on the leaf type.
     """
 
 
@@ -147,7 +139,7 @@ class RuleExpansionError(RuleAuthoringError):
     column omits its source yet its name is not a role to infer one from).
     As a :class:`RuleAuthoringError`, whether the auto path surfaces it or
     degrades to Layer D follows the provenance policy (see that base and
-    ``docs/DESIGN.md`` Decision B).
+    ARCHITECTURE.md).
     """
 
     def __init__(self, *, column: str, reason: str) -> None:
@@ -162,10 +154,9 @@ class RoleResolutionError(RuleAuthoringError):
     Raised when no axis carries the role (e.g. an ``area`` column on an
     area-less table), when a repeated non-meta role stays ambiguous (no way
     to address one of several same-role axes yet), or when a ``meta-axis``
-    pivot (#10) cannot bind — a missing/duplicate meta-axis, a ``where``-less
+    pivot cannot bind — a missing/duplicate meta-axis, a ``where``-less
     meta column, or absent class metadata. As a :class:`RuleAuthoringError`,
-    the auto path surfaces or degrades it by provenance (``docs/DESIGN.md``
-    Decision B).
+    the auto path surfaces or degrades it by provenance (ARCHITECTURE.md).
     """
 
     def __init__(self, *, role: object, reason: str) -> None:
@@ -179,8 +170,8 @@ class UnknownTransformError(RuleAuthoringError):
 
     A rule-authoring error — a typo, or a transform a newer pyestat
     registers that this version lacks. As a :class:`RuleAuthoringError` it
-    is routed by provenance on the auto path (``docs/DESIGN.md`` Decision
-    B), and being typed it never reaches a caller as a bare ``KeyError``.
+    is routed by provenance on the auto path (ARCHITECTURE.md), and being
+    typed it never reaches a caller as a bare ``KeyError``.
     Carries the offending column and the known transform names so the
     message is actionable.
     """
@@ -206,8 +197,8 @@ class TimeFormatError(RuleAuthoringError):
     here; only an explicitly chosen strict format can. As a
     :class:`RuleAuthoringError` the auto path routes it by provenance — a
     caller-authored rule surfaces so they can pick the right format, a
-    built-in degrades to Layer D (``docs/DESIGN.md`` Decision B) — so a
-    declared format is honored rather than silently replaced by a guess.
+    built-in degrades to Layer D (ARCHITECTURE.md) — so a declared format is
+    honored rather than silently replaced by a guess.
     """
 
     def __init__(

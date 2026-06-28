@@ -1,10 +1,10 @@
-# Foreign trade, 税関別 — 普通貿易統計 税関別品別国別表 (statsCode 00350300, #29).
+# Foreign trade, 税関別 — 普通貿易統計 税関別品別国別表 (statsCode 00350300).
 #
 # The sibling of foreign_trade.yaml: statsCode 00350300 has two structural
 # groups, and this one adds a 税関 (customs office) axis to the 品別国別表 cross.
 # It classifies as [category, meta-axis, category, area, time] — two category
 # axes (品目 cat01 / 税関 cat03) that role addressing alone cannot tell apart, so
-# each column names its axis id (#38). The cat02 measure×period fold (key / where
+# each column names its axis id. The cat02 measure×period fold (key / where
 # parent / unit_from) is identical to foreign_trade.yaml; see that file for the
 # modifier rationale. Together the two rules structure the whole trade family.
 #

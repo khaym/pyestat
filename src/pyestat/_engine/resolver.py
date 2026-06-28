@@ -1,18 +1,14 @@
-"""Rule resolution for the v2 auto path (Layers C > B > A, #28).
+"""Rule resolution for the v2 auto path (Layers C > B > A).
 
 Given a table's axis classification, pick the rule to apply:
 
 * **C / B** — the highest-precedence v2 rule whose ``match.role_pattern``
-  equals the table's classified role pattern. Layers are walked in
-  resolution order user (C) > project (C) > builtin (B); the first layer
-  with a match wins. Two rules matching in the *same* layer route by
-  provenance (``docs/DESIGN.md`` Decision B): a caller-authored layer (user
-  / project) surfaces an :class:`AmbiguousRuleError` so the caller can fix
-  their rules, while a built-in conflict — a packaging bug the caller cannot
-  fix — is skipped so resolution falls through to a generic rule or Layer D
-  rather than crash the request. A built-in collision is a defect caught by
-  a bundle-consistency test (``tests/test_builtin_rules.py``), not at request
-  time.
+  equals the table's classified role pattern, walked in resolution order
+  user (C) > project (C) > builtin (B); the first layer with a match wins.
+  A *same-layer* conflict routes by provenance (see ARCHITECTURE.md): a
+  caller-authored layer (user / project) raises :class:`AmbiguousRuleError`,
+  while a built-in conflict is skipped — a packaging bug caught by
+  ``tests/test_builtin_rules.py``, not at request time.
 * **A** — when no specific rule matched, a generic rule built from the
   role-default registry (:func:`build_generic_rule`), which itself returns
   ``None`` for tables that need a pivot.
@@ -25,10 +21,8 @@ free of request plumbing and is unit-testable from a hand-built
 classification.
 
 A non-``None`` result is a :class:`ResolvedRule` pairing the rule with the
-*layer* it came from. The layer is the provenance the auto path needs to
-decide, when applying the rule fails, whether to surface the failure (a
-rule the caller authored) or degrade to Layer D (a library-provided rule);
-see ``docs/DESIGN.md`` Decision B.
+*layer* it came from — the provenance the auto path uses, when applying the
+rule fails, to decide surface vs degrade (see ARCHITECTURE.md).
 """
 from __future__ import annotations
 
@@ -44,7 +38,7 @@ from pyestat.errors import AmbiguousRuleError
 
 
 class RuleLayer(Enum):
-    """Which resolution layer produced a rule (Decision E).
+    """Which resolution layer produced a rule.
 
     The distinction the auto path acts on is *caller-authored* (user /
     project) versus *library-provided* (builtin / generic) — see
@@ -92,12 +86,12 @@ def resolve_v2(
     ``stats_code`` is the table's e-Stat survey-family code (from
     ``TABLE_INF.STAT_NAME.@code``). A rule that pins ``match.stats_code``
     matches only when it equals this; a rule that leaves it unset matches by
-    role pattern alone (#29). A table without a statsCode (``None``) matches
+    role pattern alone. A table without a statsCode (``None``) matches
     only unscoped rules, so a family-specific rule never guesses.
 
     ``class_objs`` carries the table's class metadata; the generic Layer A
     fallback needs the meta-axis member names to auto-generate a pivot rule
-    (#34). Omitted (the default), a meta-axis table cannot be pivoted and
+   . Omitted (the default), a meta-axis table cannot be pivoted and
     routes to Layer D.
     """
     if not classification.clears(threshold):
@@ -108,7 +102,7 @@ def resolve_v2(
         if list(rule.match.role_pattern) != pattern:
             return False
         # stats_code is an extra AND-narrowing: an unset rule applies to any
-        # family; a set rule needs the table's family to confirm it (#29).
+        # family; a set rule needs the table's family to confirm it.
         return rule.match.stats_code is None or rule.match.stats_code == stats_code
 
     for rules, layer in (
@@ -118,13 +112,10 @@ def resolve_v2(
     ):
         matched = [rule for rule in rules if _matches(rule)]
         if len(matched) > 1:
-            # A same-layer conflict follows the surface/degrade policy by
-            # provenance (DESIGN.md Decision B): a caller-authored layer
-            # (user / project) surfaces so the caller can fix their rules; a
-            # library layer (builtin) is a packaging bug the caller cannot
-            # fix, so skip it and fall through to a generic rule or Layer D
-            # rather than crash. (Built-in conflicts are meant to be caught
-            # in CI; degrading keeps a release-time slip from breaking calls.)
+            # Same-layer conflict, routed by provenance (see ARCHITECTURE.md):
+            # a caller-authored layer surfaces so the caller can fix it; a
+            # built-in conflict is skipped (a CI-caught packaging bug) so
+            # resolution falls through rather than crashing the request.
             if layer.is_caller_authored:
                 raise AmbiguousRuleError(
                     stats_data_id=stats_data_id, matched_rules=matched

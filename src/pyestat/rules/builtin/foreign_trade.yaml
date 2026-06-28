@@ -1,10 +1,10 @@
-# Foreign trade — 普通貿易統計 品別国別表 (statsCode 00350300, #29).
+# Foreign trade — 普通貿易統計 品別国別表 (statsCode 00350300).
 #
 # cat02 is a hierarchical measure×period cross: a measure family (数量1 /
 # 数量2 / 金額, level 1) with each month hung under it by @parentCode
-# (level 2). Layer A declines a hierarchical meta-axis (#34) and routes the
+# (level 2). Layer A declines a hierarchical meta-axis and routes the
 # table to Layer D (raw rows), so without this rule trade comes back
-# unstructured. The rule folds the cross with the #37/#39 meta-axis modifiers:
+# unstructured. The rule folds the cross with the meta-axis modifiers:
 #
 #   key       — the month lives only in the member name ("1月_金額"), not in
 #               any code, so a pattern lifts it into the row grain.

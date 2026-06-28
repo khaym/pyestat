@@ -1,4 +1,4 @@
-"""Built-in time parsers shipped at MVP (Layer 3 helper).
+"""Built-in time parsers (Layer 3 helper).
 
 Each parser maps an e-Stat time-axis code into a normalized string
 plus a granularity tag. Parsers are pure functions, imported and called
@@ -14,8 +14,7 @@ without re-parsing.
 Observed wire shapes (pinned in ``tests/test_time.py``):
 
 * Population estimates: 10-digit ``YYYY00MMMM`` (trailing pair is the
-  same month, repeated — DESIGN.md initially mis-described this as
-  five-digit).
+  same month, repeated).
 * Quarterly GDP: 10-digit ``YYYY00<start_mm><end_mm>``.
 * Trade (yearly): 10-digit ``YYYY000000``; the bare four-digit form
   also accepted to keep custom rules ergonomic.
@@ -110,7 +109,7 @@ def fiscal_year_e_stat(code: str) -> TimePoint:
 
     e-Stat encodes 「1995年度」 as ``1995100000`` — the ``10`` at the
     separator position is a fiscal *flag*, not a month. The normalized form
-    is the April-start year span (#33): yearly granularity so year rollups
+    is the April-start year span: yearly granularity so year rollups
     work, with the start month as the period identity — the same vocabulary
     as a range-named span (population's Oct-start year is ``2006-10``) — so
     calendar 「2015年」 and fiscal 「2015年度」, which CPI ships side by
@@ -150,11 +149,11 @@ def best_effort(code: str, name: str | None = None) -> TimePoint | None:
     A *total* function: it never raises. Each parser rejects shapes it
     does not own with ``ValueError``, so a code none recognise yields
     ``None`` and the caller keeps the raw value. Shared by Layer D's
-    no-rule fallback (#23) and Layer A's ``time`` role-default (#22) so
+    no-rule fallback and Layer A's ``time`` role-default so
     both agree on what counts as a recognisable time code.
 
     ``name`` is the member's display name, the only signal that separates a
-    *year span* from a month (#33): population vital statistics encode an
+    *year span* from a month: population vital statistics encode an
     October-start annual aggregate (「2006年10月～2007年9月」) as
     ``2006001010`` — byte-identical to monthly 2006-10. The demotion is
     verified, not marker-sniffed: a **monthly** parse becomes yearly

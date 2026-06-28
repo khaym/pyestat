@@ -27,7 +27,7 @@ from pyestat._engine.rule import RuleV2
 def _stats_code_of(table_inf: Mapping[str, Any] | None) -> str | None:
     """The table's e-Stat survey-family code, or ``None`` when ``TABLE_INF``
     does not carry it. It lives at ``STAT_NAME.@code``; the schema drifts
-    across tables (``docs/DESIGN.md``), so every level is probed defensively —
+    across tables, so every level is probed defensively —
     an absent or malformed ``STAT_NAME`` yields ``None`` (a family-scoped rule
     then declines) rather than raising on the request path."""
     if not isinstance(table_inf, Mapping):
@@ -52,7 +52,7 @@ def run_pipeline(
     builtin_rules: Sequence[RuleV2],
 ) -> tuple[dict[str, Any], ...]:
     """Transform already-fetched rows for one table, owning the Layer A–D
-    routing and the surface-vs-degrade policy (``docs/DESIGN.md`` Decision B):
+    routing and the surface-vs-degrade policy (ARCHITECTURE.md):
 
     * ``"auto"`` — classify, then resolve a rule through Layers C > B > A > D
       and apply it; a caller-authored rule that fails surfaces, a built-in or
@@ -61,10 +61,10 @@ def run_pipeline(
     * ``None`` — raw mode; Layer 2's flattened rows verbatim.
     * :class:`RuleV2` — apply this rule directly, bypassing resolution.
 
-    ``aggregates`` filters detail / aggregate rows (#36) before any rule, so
+    ``aggregates`` filters detail / aggregate rows before any rule, so
     every mode honors it.
 
-    Classifies once, on the *unfiltered* rows, so #27's data-driven meta-axis
+    Classifies once, on the *unfiltered* rows, so the data-driven meta-axis
     signal sees the whole table; the result feeds the aggregate selection,
     resolution, v2 application, and the Layer D fallback. Classification is
     computed only when ``"auto"`` needs it or an aggregate selection does — raw
@@ -77,7 +77,7 @@ def run_pipeline(
     if aggregates != "include":
         # Filter detail / aggregate rows before any rule runs, so every mode
         # honors the selection and a downstream pivot folds only the chosen
-        # grain (#36).
+        # grain.
         values = select_rows(values, classification, class_objs, aggregates)
 
     if rule == "auto":

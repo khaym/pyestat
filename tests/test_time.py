@@ -1,7 +1,7 @@
 """Tests for built-in time parsers (Layer 3).
 
-The parsers are pure functions and cover the three granularities
-DESIGN.md ships at MVP. Real e-Stat time codes for the three benchmark
+The parsers are pure functions and cover the three granularities the
+built-in parsers ship. Real e-Stat time codes for the three benchmark
 tables are pinned as test cases so a future drift in the wire format
 is caught here instead of in a one-off integration run.
 """
@@ -35,7 +35,7 @@ class TestMonthly:
     def test_round_trips_observed_codes(self, code: str, normalized: str) -> None:
         # The codes here came out of an actual e-Stat probe; pinning
         # them stops a future "simplification" from re-introducing the
-        # 9-10 vs 7-8 digit confusion DESIGN.md had to call out.
+        # 9-10 vs 7-8 digit confusion.
         result = monthly_e_stat(code)
         assert result == TimePoint(normalized, "monthly")
 
@@ -108,7 +108,7 @@ class TestYearly:
 class TestFiscalYear:
     """CPI / GDP annual tables encode 「1995年度」 as ``YYYY100000``. A
     fiscal year is normalized as the April-start year span ``YYYY-04`` with
-    yearly granularity (#33 decision): one vocabulary for every non-calendar
+    yearly granularity (by design): one vocabulary for every non-calendar
     12-month aggregate (population's Oct-start span is ``2006-10`` the same
     way), and 「2015年」 / 「2015年度」 — which CPI ships side by side in one
     time axis — stay distinguishable instead of double-counting under "2015".
@@ -141,7 +141,7 @@ class TestFiscalYear:
 
 
 class TestBestEffortSpanDisambiguation:
-    """``best_effort`` with the member's display name (#33).
+    """``best_effort`` with the member's display name.
 
     The year-span codes of population vital statistics (0003001309,
     「2006年10月～2007年9月」 = an October-start annual aggregate) are

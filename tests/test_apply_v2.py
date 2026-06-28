@@ -1,10 +1,10 @@
-"""Tests for applying a v2 rule to fetched rows (task #22).
+"""Tests for applying a v2 rule to fetched rows.
 
 ``apply_v2_rule`` is the v2 counterpart of the v1 ``apply_rule`` path.
 It takes the rows, the axis *classification* (which axis plays which
 role), and a v2 rule, and emits one output row per input row with the
 declared columns. Resolving role → axis from a classification is the
-seam with #28: #28 runs the classifier on the request path and hands
+seam with the request path: the pipeline runs the classifier and hands
 the result here; these tests build the classification by hand so the
 apply logic is exercised in isolation.
 
@@ -12,8 +12,8 @@ Two shapes share this entry point:
 
 * **1:1** — one output row per input row; a referenced role must resolve
   to exactly one axis (a non-meta role spanning several axes still fails
-  identifiably so #28 can fall back to Layer D).
-* **N:1 pivot (#10)** — when a column's ``meta-axis`` source carries a
+  identifiably so the caller can fall back to Layer D).
+* **N:1 pivot** — when a column's ``meta-axis`` source carries a
   ``where`` predicate, rows are folded by the non-meta axes into one
   record per group and each predicate selects a member's cell.
 """
@@ -78,7 +78,7 @@ def _rule(output: list[dict]) -> RuleV2:
 
 class TestApplyV2LongForm:
     def test_emits_declared_columns_as_canonical_cells(self) -> None:
-        # The core Done (#35): long-form columns drive the output, each as a
+        # The core Done: long-form columns drive the output, each as a
         # canonical cell. time is a full time object (normalized structurally),
         # area is a {code,label} dimension (label == code with no metadata
         # here), and the value role is a {value,unit} measure reading the
@@ -116,7 +116,7 @@ class TestApplyV2LongForm:
 
 class TestApplyV2ShortForm:
     def test_accepts_short_form_by_expanding_defensively(self) -> None:
-        # apply expands internally, so a caller (e.g. #28 building a Layer
+        # apply expands internally, so a caller (e.g. the resolver building a Layer
         # A rule in memory) can pass a short-form rule without a separate
         # load step.
         rule = _rule([{"column": "time"}, {"column": "area"}, {"column": "value"}])
@@ -132,7 +132,7 @@ class TestApplyV2ShortForm:
 class TestApplyV2RoleResolution:
     def test_role_absent_from_classification_raises_identifiably(self) -> None:
         # A rule asking for an area column on an area-less table cannot be
-        # satisfied; the error is a typed EstatError so #28 can catch it
+        # satisfied; the error is a typed EstatError so the caller can catch it
         # and route to Layer D rather than surfacing it to the caller.
         gdp_like = TableClassification((
             _axis("time", AxisRole.TIME),
@@ -144,7 +144,7 @@ class TestApplyV2RoleResolution:
 
     def test_role_mapping_to_multiple_axes_points_at_pivot(self) -> None:
         # Two category axes and a column drawing on "category" is ambiguous:
-        # #10 added the meta-axis pivot, but disambiguating a *non-meta* role
+        # The meta-axis pivot exists, but disambiguating a *non-meta* role
         # across several axes is still out of scope. Fail identifiably and
         # name the reason.
         two_cats = TableClassification((
@@ -160,7 +160,7 @@ class TestApplyV2RoleResolution:
 
 
 class TestAxisIdAddressing:
-    """A source may address a specific axis by id (#38), not only by role.
+    """A source may address a specific axis by id, not only by role.
     This is what resolves a *repeated* non-meta role: two ``category`` axes
     (建築主 × 用途) each get their own column, addressed by their axis id —
     where bare role addressing (:class:`TestApplyV2RoleResolution`) fails."""
@@ -206,7 +206,7 @@ class TestAxisIdAddressing:
 
 class TestUnknownTransform:
     """A transform name the registry does not know is an authoring error that
-    must surface as a typed :class:`UnknownTransformError` (#32) — never the
+    must surface as a typed :class:`UnknownTransformError` — never the
     registry's bare ``KeyError``, which would slip past the auto path's
     typed-error handling and crash the caller."""
 
@@ -248,7 +248,7 @@ class TestUnknownTransform:
 
 
 class TestTimeFormat:
-    """A TIME column's *declared* format drives the time cell (#35). The
+    """A TIME column's *declared* format drives the time cell. The
     total ``best_effort_time`` role-default keeps an unrecognised code raw; a
     declared *strict* format the data violates, or a non-time transform, is a
     typed :class:`TimeFormatError` — so a declared format is honored, not
@@ -294,7 +294,7 @@ class TestTimeFormat:
     def test_best_effort_reads_the_member_name_to_spot_a_year_span(self) -> None:
         # Population vital statistics (0003001309): the year-span code
         # 2006001010 is byte-identical to monthly 2006-10; only the member
-        # name 「2006年10月～2007年9月」 tells them apart (#33). The
+        # name 「2006年10月～2007年9月」 tells them apart. The
         # best_effort_time role-default — what every Layer A generic rule
         # declares — must consult it, not just the code.
         rows = ({"time": "2006001010", "area": "00000", "tab": "020", "value": "1"},)
@@ -310,7 +310,7 @@ class TestTimeFormat:
 class TestRuleAuthoringErrorHierarchy:
     def test_apply_time_authoring_errors_share_one_base(self) -> None:
         # apply_auto catches RuleAuthoringError, so the surface/degrade policy
-        # covers every leaf — and a future leaf (e.g. #4's standard-code
+        # covers every leaf — and a future leaf (e.g. a standard-code
         # errors) — without editing the except clause. Pin the hierarchy that
         # guarantee rests on.
         assert issubclass(RoleResolutionError, RuleAuthoringError)
@@ -338,7 +338,7 @@ class TestLayerAGenericRuleNeverRaises:
         },)
 
 
-# A trade-like meta-axis table (#17 pattern 2): cat02 splits one logical
+# A trade-like meta-axis table (pattern 2): cat02 splits one logical
 # (cat01, area, time) record into one row per measure. The member *names*
 # (合計_金額 / 合計_数量2 / 単位2) carry the semantics a pivot rule selects on;
 # the codes (140 / 130 / 110) are opaque and table-specific.
@@ -381,7 +381,7 @@ _TRADE_OUTPUT = [
 
 
 class TestApplyV2Pivot:
-    """N:1 pivot (#10): a meta-axis ``where`` predicate folds rows spread
+    """N:1 pivot: a meta-axis ``where`` predicate folds rows spread
     across the meta-axis into one record per non-meta group."""
 
     def test_collapses_spread_rows_into_one_record_per_group(self) -> None:
@@ -521,7 +521,7 @@ class TestApplyV2Pivot:
         assert out[0]["obs_year"]["value"] == "2020"
 
     def test_pivot_measures_keep_their_own_units(self) -> None:
-        # Trade's defining case (#35 decision 2): quantity is counted in ＮＯ,
+        # Trade's defining case (measures carry different units): quantity is counted in ＮＯ,
         # amount in 千円. Each pivoted measure column carries *its member's
         # own* unit — a single shared unit sibling could not represent two
         # measures with different units.
@@ -542,7 +542,7 @@ class TestApplyV2Pivot:
         assert out[0]["amount"] == {"value": "35220", "unit": "千円"}
 
 
-# A trade measure×period cross (#37): cat02 folds *two* dimensions into one
+# A trade measure×period cross: cat02 folds *two* dimensions into one
 # axis — a measure family (合計_数量2 / 合計_金額, level 1) and the month
 # (level 2, linked to its family by @parentCode). The month identity lives
 # only in the member *name* ("1月_金額"), not in any code, so a rule derives
@@ -592,7 +592,7 @@ def _cross_rule(output: list[dict]) -> RuleV2:
 
 
 class TestApplyV2DerivedGrain:
-    """``key`` derives a grain dimension from member names (#37): the
+    """``key`` derives a grain dimension from member names: the
     measure×period cross folds into one row per (group, derived key), with
     `where` selecting each measure within that row — no member enumeration."""
 
@@ -681,9 +681,9 @@ class TestApplyV2DerivedGrain:
 
     def test_duplicate_rows_of_one_member_in_a_group_take_the_first(self) -> None:
         # A member duplicated within one group (a malformed response, or an
-        # axis outside the role pattern) must not be mistaken for the #37
+        # axis outside the role pattern) must not be mistaken for the
         # ambiguity of *several* members matching one predicate: it collapses
-        # to its first row (the pre-#37 graceful behavior), not an error.
+        # to its first row (the earlier graceful behavior), not an error.
         class_objs = (_classobj("cat02", [("140", "合計_金額")]),)
         rows = (
             {"cat01": "X", "cat02": "140", "area": "50103", "time": "2005000000", "value": "100"},
@@ -711,9 +711,9 @@ class TestApplyV2DerivedGrain:
         assert {r["month"]: r["amount"]["value"] for r in out} == {"1月": "35220", "2月": "41080"}
 
 
-# A trade quantity's unit (#39): e-Stat ships the unit not as an `@unit` but as
+# A trade quantity's unit: e-Stat ships the unit not as an `@unit` but as
 # a level-1 member (単位2) whose *observation value* is the unit string ("ＮＯ"
-# = count). That member carries no period grain, so #37's `key` drops it from
+# = count). That member carries no period grain, so the `key` drops it from
 # every month row. A `unit_from` predicate on the measure column reaches the
 # grain-less member and folds its value into the measure's `unit`, so a quantity
 # cell is self-describing ({value, unit}) like every other measure — not a
@@ -746,7 +746,7 @@ _UNIT_ROWS = (
 
 class TestApplyV2UnitBroadcast:
     """`unit_from` folds a grain-less unit member's value into a measure's unit
-    (#39): trade quantities come back self-describing, the unit broadcast to
+   : trade quantities come back self-describing, the unit broadcast to
     every period row of the group."""
 
     def test_quantity_carries_its_broadcast_unit(self) -> None:
@@ -787,7 +787,7 @@ class TestApplyV2UnitBroadcast:
     def test_unit_from_matching_no_member_leaves_unit_none(self) -> None:
         # A unit_from that matches nothing (a retired or absent unit member)
         # leaves the measure's unit None rather than dropping the cell — the
-        # same graceful stance #37 takes for a `where` matching no member.
+        # same graceful stance taken for a `where` matching no member.
         rule = _cross_rule([
             {"column": "month",
              "source": {"role": "meta-axis", "key": {"pattern": r"^(\d{1,2}月)_"}}},

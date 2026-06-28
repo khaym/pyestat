@@ -1,14 +1,13 @@
-"""Tests for Layer D — the no-rule fallback (task #23).
+"""Tests for Layer D — the no-rule fallback.
 
 Layer D is what ``rule="heuristic"`` invokes and what ``rule="auto"`` falls
 to when no rule matches. Its contract is **preserve data, normalize
-nothing structural**: no row is dropped and no cell is coerced. Since #35
-its output is the canonical *nested* form — every axis becomes a
+nothing structural**: no row is dropped and no cell is coerced. Its output is the canonical *nested* form — every axis becomes a
 ``{code, label}`` object (time adds ``normalized`` / ``granularity``), and
 the observation cell becomes ``{value, unit}`` — the same shape the v2
 paths emit, so a caller sees one structure regardless of which path ran.
 
-The point of #23 is that the axis classifier (not a hand-written rule)
+The point of Layer D is that the axis classifier (not a hand-written rule)
 decides which axis is ``time``, so best-effort normalization works even on
 an uncovered table with a non-conventional axis id.
 """
@@ -49,7 +48,7 @@ class TestBestEffortTime:
 
     def test_fiscal_year_code_is_the_april_start_span(self) -> None:
         # A 10-digit fiscal-year code (GDP 0003364993, 「1995年度」) is the
-        # April-start year span (#33): yearly granularity for rollups, with
+        # April-start year span: yearly granularity for rollups, with
         # normalized "1995-04" so it never merges with calendar 「1995年」 —
         # CPI ships both as siblings in one time axis.
         class_objs = [_axis("time", "時間軸（年度）", ("1995100000", "1995年度"))]
@@ -72,14 +71,14 @@ class TestBestEffortTime:
         # Population vital statistics (0003001309): the code 2006001010 is
         # byte-identical to monthly 2006-10, but the member name
         # 「2006年10月～2007年9月」 shows an October-start annual aggregate.
-        # Misreading it as monthly puts a year's deaths in one month (#33).
+        # Misreading it as monthly puts a year's deaths in one month.
         class_objs = [
             _axis("time", "時間軸（年間）", ("2006001010", "2006年10月～2007年9月")),
         ]
         out = _layer_d(({"time": "2006001010", "value": "1084450"},), class_objs)
         time = out[0]["time"]
         assert time["granularity"] == "yearly"
-        assert time["normalized"] == "2006-10"  # start month, per #33 contract
+        assert time["normalized"] == "2006-10"  # start month, per the time contract
         assert time["label"] == "2006年10月～2007年9月"
 
     def test_time_detected_on_non_conventional_axis_id(self) -> None:

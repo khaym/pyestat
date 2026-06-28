@@ -18,8 +18,8 @@ from pyestat._engine.rule import RuleV2
 from pyestat.errors import RuleLoadError
 
 
-# v2 is the only schema the engine speaks (#30 retired the never-published
-# v1). A file with any other ``schema_version`` fails fast at load time.
+# v2 is the only schema the engine speaks; the never-published v1 was
+# retired. A file with any other ``schema_version`` fails fast at load time.
 _SUPPORTED_VERSIONS = frozenset({"2"})
 
 
@@ -34,7 +34,7 @@ class YamlRuleLoader:
         # Every failure mode here is wrapped in a typed RuleLoadError so a
         # malformed file surfaces as an EstatError, not a raw yaml / pydantic
         # / OSError — keeping the ``except EstatError`` contract whole for a
-        # caller who dropped a bad file in their project rules directory (#15).
+        # caller who dropped a bad file in their project rules directory.
         try:
             with path.open(encoding="utf-8") as f:
                 data: Any = yaml.safe_load(f)
@@ -76,7 +76,7 @@ class YamlRuleLoader:
         ``.yaml`` is skipped rather than opened (which would raise an OS
         error). The extension match is case-insensitive, so ``.yml`` and
         ``.YAML`` are picked up too — the drop-in "place a file and it
-        applies" contract (#15) should not silently ignore a common spelling.
+        applies" contract should not silently ignore a common spelling.
         """
         if not path.is_dir():
             return []

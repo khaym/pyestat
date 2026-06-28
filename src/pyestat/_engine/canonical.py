@@ -1,10 +1,10 @@
 """Output contract (Layer 3) — the canonical nested record and its flat
-projection (#35).
+projection.
 
 The single home for "what one converted row looks like". Every conversion
 path (Layer D, v2 generic/builtin 1:1, v2 pivot) builds its cells through
 the constructors here, so the output shape cannot drift between paths — the
-inconsistency #35 set out to remove (generic 1:1 dropping labels, time
+inconsistency it removes (generic 1:1 dropping labels, time
 metadata, and the observation value while Layer D kept them).
 
 The **nested form is canonical**: each field is a self-describing object,
@@ -65,8 +65,8 @@ def time_cell(
     the object is fully formed.
 
     Best-effort normalization reads ``label`` too: the member's display name
-    is the only signal that separates a year-span code from a month (#33 —
-    see :func:`pyestat._engine.time.best_effort`).
+    is the only signal that separates a year-span code from a month (see
+    :func:`pyestat._engine.time.best_effort`).
     """
     if point is _AUTO_NORMALIZE:
         point = (

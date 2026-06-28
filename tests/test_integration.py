@@ -10,9 +10,9 @@ the live-API tests with ``pytest -m integration``.
 Coverage focus:
 
 * The benchmark tables come back structured from the live API: GDP and
-  the population estimates fold through the generic Layer A path (#34),
+  the population estimates fold through the generic Layer A path,
   which needs no bundled rule, and their time axis is normalized with the
-  right granularity. The one bundled rule — foreign trade (#29) — is not
+  right granularity. The one bundled rule — foreign trade — is not
   exercised here: the table is 3.8M rows and excluded by ``max_rows`` (it
   is pinned on synthetic rows in ``tests/test_builtin_rules.py`` instead).
 * The ``max_rows`` guard refuses an oversized table without paying
@@ -39,7 +39,7 @@ pytestmark = pytest.mark.integration
 
 
 # Concrete statsDataId values verified against the live API during
-# design (DESIGN.md context section). Anchored here so the rest of
+# design. Anchored here so the rest of
 # the file reads like a behavior spec rather than ID soup.
 POPULATION_ID = "0003443838"   # monthly population estimates
 GDP_ID = "0003109741"          # quarterly GDP advance
@@ -74,7 +74,7 @@ class TestBenchmarkTablesStructuredLive:
         # with a marker value) doesn't fail the assertion.
         sample = resp.values[:5]
         for row in sample:
-            time = row["time"]  # canonical time cell (#35)
+            time = row["time"]  # canonical time cell
             assert time["granularity"] == "monthly"
             # YYYY-MM
             assert isinstance(time["normalized"], str)
@@ -88,7 +88,7 @@ class TestBenchmarkTablesStructuredLive:
         assert len(resp.values) > 0
         sample = resp.values[:5]
         for row in sample:
-            time = row["time"]  # canonical time cell (#35)
+            time = row["time"]  # canonical time cell
             assert time["granularity"] == "quarterly"
             # YYYY-Qn
             assert "-Q" in time["normalized"]

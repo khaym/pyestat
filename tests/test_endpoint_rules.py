@@ -1,7 +1,7 @@
 """Tests for the rule= integration into EstatClient.get_stats_data.
 
 The rule engine (Layer 3) plugs into the endpoint client (Layer 2). These
-tests prove the request-path wiring (#28), not the resolver / apply
+tests prove the request-path wiring, not the resolver / apply
 mechanics (those have isolated coverage in test_resolver / test_apply_v2 /
 test_layer_d). Behavior modes:
 
@@ -9,7 +9,7 @@ test_layer_d). Behavior modes:
 * ``rule="auto"`` (default) — classify the axes, then resolve through
   Layers C > B > A > D: a matching v2 rule (user/project, then built-in),
   else a Layer A generic rule for a clean table, else Layer D.
-* ``rule="heuristic"`` — Layer D fallback (#23): best-effort ``time``
+* ``rule="heuristic"`` — Layer D fallback: best-effort ``time``
   normalization plus additive labels, preserving raw data; bypasses rules.
 * ``rule=RuleV2(...)`` — a v2 rule applied directly (the escape hatch),
   bypassing resolution.
@@ -99,7 +99,7 @@ def _meta_axis_payload() -> dict[str, Any]:
     meta-axis (role pattern ``[meta-axis, time]``).
 
     With a matching builtin pivot rule it folds via Layer B; with none, Layer A
-    now auto-generates a pivot rule (#34) and folds it generically. Built
+    now auto-generates a pivot rule and folds it generically. Built
     inline (not an on-disk fixture) because its whole point is a shape the
     bundled fixtures deliberately avoid.
     """
@@ -132,7 +132,7 @@ def _hierarchical_meta_axis_payload() -> dict[str, Any]:
     members also carry a code hierarchy (@level/@parentCode) — 合計 measures
     (level 1) over monthly children (level 2). The classifier calls it a
     meta-axis, but flat-pivoting would spread the period dimension into columns,
-    so auto must route it to Layer D rather than fold it (#34 flatness gate).
+    so auto must route it to Layer D rather than fold it (the flatness gate).
     """
     return {
         "GET_STATS_DATA": {
@@ -166,7 +166,7 @@ def _hierarchical_category_payload() -> dict[str, Any]:
     総数 (the aggregate) over 米 / パン (its leaves), linked by ``@parentCode``.
 
     The shape Layer A handles generically (like the population fixture), but
-    with the parent/child links #36's aggregate selection keys on — built
+    with the parent/child links aggregate selection keys on — built
     inline because the bundled fixtures are deliberately flat.
     """
     return {
@@ -198,7 +198,7 @@ def _hierarchical_category_payload() -> dict[str, Any]:
 def _building_starts_payload() -> dict[str, Any]:
     """建築着工 0003114490 in miniature: the ``tab`` axis is a meta-axis over
     three measures (建築物の数 / 床面積 / 工事費予定額), and 建築主 (cat01) and
-    用途 (cat03) are *two* category axes alongside area and time. The shape #38
+    用途 (cat03) are *two* category axes alongside area and time. The shape this case
     targets — before it, the repeated category role sent this to Layer D spread
     one row per measure; now Layer A folds it into one record per (建築主, 用途,
     area, time) with the three measures as columns.
@@ -234,7 +234,7 @@ def _building_starts_payload() -> dict[str, Any]:
 def _multi_category_payload() -> dict[str, Any]:
     """A wage-structure-style table: a single-value ``tab`` (so the measure is
     1:1, not spread) with *two* category axes — 職種 (cat01) and 企業規模 (cat03)
-    — plus time. No meta-axis, so #38's 1:1 path maps each category to its own
+    — plus time. No meta-axis, so the 1:1 path maps each category to its own
     column rather than declining for the repeated role.
     """
     return {
@@ -260,7 +260,7 @@ def _multi_category_payload() -> dict[str, Any]:
 
 class TestAggregateSelection:
     """``aggregates=`` filters detail / aggregate rows before any rule runs
-    (#36), so a caller avoids double-counting 総数 against its 品目. These pin
+   , so a caller avoids double-counting 総数 against its 品目. These pin
     the request-path wiring: the selection composes with the conversion mode
     (auto, raw) and reads the per-response ``@parentCode`` hierarchy.
     """
@@ -292,9 +292,9 @@ class TestAggregateSelection:
 
 
 class TestMultiAxisAuto:
-    """``rule="auto"`` structures a table with two axes of the same role (#38).
+    """``rule="auto"`` structures a table with two axes of the same role.
     e-Stat ships these often — 建築着工 (建築主 × 用途), 賃金構造 (職種 × 企業規模).
-    Before #38 the repeated role sent them to Layer D (raw codes); now Layer A
+    Earlier the repeated role sent them to Layer D (raw codes); now Layer A
     addresses each axis by id and structures them. These pin the request-path
     wiring with no builtin rules in play, so resolution falls to Layer A.
     """
@@ -352,7 +352,7 @@ class TestAutoMode:
     def test_auto_uses_layer_a_generic_when_no_rule_matches(self) -> None:
         # No v2 rules supplied; the fixture is a clean value+category+time
         # table, so Layer A builds a generic rule. Output is canonical cells
-        # (#35): a time object, a {code,label} category, and a {value,unit}
+        #: a time object, a {code,label} category, and a {value,unit}
         # measure — the cell left uncoerced (Layer A never casts).
         client = _make_client(_population_payload(), builtin_rules=[])
         resp = client.get_stats_data("0003448237")
@@ -385,7 +385,7 @@ class TestAutoMode:
         }
 
     def test_auto_pivots_meta_axis_table_without_a_builtin(self) -> None:
-        # #34: a single-meta-axis table with no matching builtin no longer
+        # A single-meta-axis table with no matching builtin no longer
         # falls to Layer D — Layer A auto-generates a pivot rule, so auto folds
         # the two spread rows into one record keyed by the meta-member names.
         client = _make_client(_meta_axis_payload(), builtin_rules=[])
@@ -396,7 +396,7 @@ class TestAutoMode:
         assert out[0]["金額"] == {"value": "1000", "unit": None}
 
     def test_auto_does_not_pivot_a_hierarchical_meta_axis(self) -> None:
-        # #34 flatness gate: a meta-axis carrying a code hierarchy folds a
+        # The flatness gate: a meta-axis carrying a code hierarchy folds a
         # second dimension into its members (trade's measure×period cross), so
         # auto declines the generic pivot and rides Layer D — rows stay spread
         # (one per member), data preserved, nothing flattened into columns.
@@ -413,7 +413,7 @@ class TestAutoMode:
         # from the table (area on an area-less table); apply_v2_rule raises
         # RoleResolutionError, and because the failing rule is library-supplied
         # (Layer B) the auto path demotes to Layer D instead of surfacing it
-        # (#32). A user rule in the same spot would surface — see
+        #. A user rule in the same spot would surface — see
         # TestAutoFailurePolicy.
         builtin = RuleV2.model_validate({
             "schema_version": "2",
@@ -432,7 +432,7 @@ class TestAutoMode:
 class TestAutoPivot:
     """A matched v2 pivot rule folds meta-axis-spread rows end-to-end.
 
-    This pins the request-path wiring specific to #10: the endpoint must
+    This pins the request-path wiring specific to the pivot: the endpoint must
     thread ``class_objs`` (the meta-member names a ``where`` predicate
     matches against) from the fetched page through ``apply_auto`` into the
     pivot. The ``_meta_axis_payload`` tab carries 数量 / 金額, so a builtin
@@ -485,11 +485,11 @@ class TestAutoPivot:
 
 
 class TestAutoFailurePolicy:
-    """``rule="auto"`` routes a rule-application failure by provenance (#32):
+    """``rule="auto"`` routes a rule-application failure by provenance:
     a caller-authored rule (``user_rules``, Layer C) surfaces the typed error
     so the caller can fix it; a library-supplied rule (built-in, Layer B)
     degrades to Layer D, since the caller cannot fix it and preserved data
-    beats a crash. ``docs/DESIGN.md`` Decision B is the source of truth.
+    beats a crash. ARCHITECTURE.md (Failure policy) is the source of truth.
 
     The population fixture classifies as ``value + category + time``; each
     rule below matches that pattern so resolution selects it, and the failure
@@ -649,7 +649,7 @@ class TestExplicitRule:
     def test_explicit_rule_that_cannot_bind_surfaces_typed_error(self) -> None:
         # An explicit rule is caller-authored: a binding failure surfaces as a
         # typed EstatError (no resolution chain, no Layer D demotion) so the
-        # caller can fix the rule they passed (#32). Here `area` is absent from
+        # caller can fix the rule they passed. Here `area` is absent from
         # the area-less population table.
         rule = RuleV2.model_validate({
             "schema_version": "2",
@@ -752,13 +752,13 @@ class TestUserRules:
 
 class TestProjectRules:
     """``project_rules_dir`` auto-discovers caller-authored v2 rules from a
-    directory (#15) — the middle resolver layer between ``user_rules`` (C) and
+    directory — the middle resolver layer between ``user_rules`` (C) and
     the built-ins (B). It is the escape hatch for tables no built-in covers:
     drop a YAML in the directory and it applies with no code change, so a
     caller can keep their rules under version control instead of wiring them
     in Python. Pinned here:
 
-    * a rule dropped in the default ``./rules`` directory is discovered;
+    * a rule dropped in the default ``./pyestat_rules`` directory is discovered;
     * ``project_rules_dir=`` relocates the directory the caller scans;
     * a project rule shadows a built-in for the same role pattern, and a
       user rule shadows the project rule (the full ``user > project > builtin``
@@ -773,7 +773,7 @@ class TestProjectRules:
     sub-directory named like a YAML file; ``project_rules_dir=""`` opts out
     like ``None`` (it must not collapse to the cwd); and a malformed file in
     the directory surfaces as a typed :class:`RuleLoadError` at construction
-    (the caller authored it — Decision B).
+    (the caller authored it — ARCHITECTURE.md).
     """
 
     _PATTERN = ["value", "category", "time"]
@@ -897,7 +897,7 @@ class TestProjectRules:
         self, tmp_path: Path
     ) -> None:
         # A file the caller dropped in their project dir is caller-authored
-        # (Decision B), so a load failure must SURFACE — and as a typed
+        # (ARCHITECTURE.md), so a load failure must SURFACE — and as a typed
         # RuleLoadError (an EstatError), not a raw yaml/ValueError, so an
         # ``except EstatError`` catches it. It surfaces at construction (before
         # any request), since discovery runs in __init__.

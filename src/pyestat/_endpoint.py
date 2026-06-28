@@ -62,7 +62,7 @@ class Page:
 class StatsDataResponse:
     """Aggregated result of :meth:`EstatClient.get_stats_data`.
 
-    ``values`` is the canonical *nested* form (#35): each field is a
+    ``values`` is the canonical *nested* form: each field is a
     self-describing object — a ``{code, label}`` dimension, a time cell
     (``{code, label, normalized, granularity}``), or a ``{value, unit}``
     measure — so an agent reads ``row["cat01"]["label"]`` without a suffix
@@ -208,17 +208,17 @@ class EstatClient:
 
     * ``user_rules`` — caller-defined v2 rules injected into the top layer.
     * ``project_rules_dir`` — a directory of ``*.yaml`` / ``*.yml`` rules
-      auto-discovered into the middle layer (#15), the escape hatch for
+      auto-discovered into the middle layer, the escape hatch for
       tables no built-in covers: drop a rule file in the directory and it
       applies with no code change. Defaults to ``"pyestat_rules"`` (i.e.
       ``./pyestat_rules`` relative to the working directory); pass another
-      path to relocate it, or ``None`` / ``""`` to opt out. The directory
-      name is pyestat-specific so a plain client does not accidentally adopt
-      an unrelated ``./rules`` dir. An absent directory means "no project
+      path to relocate it, or ``None`` / ``""`` to opt out. The
+      pyestat-specific name keeps a plain client from silently adopting an
+      unrelated directory's rules. An absent directory means "no project
       rules", not an error, so the common no-rules case never raises;
       discovery is working-directory dependent, and a *malformed* file in the
       directory raises :class:`RuleLoadError` at construction (the caller
-      authored it — ``docs/DESIGN.md`` Decision B).
+      authored it, so it surfaces — ARCHITECTURE.md).
     * ``builtin_rules`` — the library-bundled rules (the bottom layer),
       loaded from the package by default.
     """
@@ -246,12 +246,12 @@ class EstatClient:
         # All three layers hold v2 rules; the auto path resolves them by role
         # pattern (user > project > builtin). The project layer is populated by
         # scanning ``project_rules_dir`` so a caller drops a YAML in the
-        # directory and it applies without editing code (#15). Any falsy value
+        # directory and it applies without editing code. Any falsy value
         # (``None`` / ``""``) opts out — the latter matters because ``Path("")``
         # would otherwise collapse to the cwd and scan it. ``load_dir`` returns
         # [] for an absent directory, so a missing default ``./pyestat_rules``
         # is a no-op; a malformed file present in the directory raises
-        # RuleLoadError (the caller authored it — DESIGN.md Decision B).
+        # RuleLoadError (the caller authored it, so it surfaces — ARCHITECTURE.md).
         self._user_rules: list[RuleV2] = (
             list(user_rules) if user_rules is not None else []
         )
@@ -277,7 +277,7 @@ class EstatClient:
     ) -> StatsDataResponse:
         """Fetch one table, walking ``NEXT_KEY`` until all rows are pulled.
 
-        Every transformed mode returns the canonical *nested* row shape (#35):
+        Every transformed mode returns the canonical *nested* row shape:
         each axis is a ``{code, label}`` cell (``time`` adds ``normalized`` /
         ``granularity``) and the observation is a ``{value, unit}`` measure.
         Call :meth:`StatsDataResponse.to_flat` for the one-column-per-field
@@ -287,12 +287,10 @@ class EstatClient:
           rule through Layers C > B > A > D: a matching v2 rule
           (user/project, then built-in), else a generic rule built from the
           classified roles (Layer A), else the Layer D fallback when the
-          table cannot be structured (a low-confidence axis, or a shape
-          needing a pivot this MVP lacks). A rule *you* supplied via
-          ``user_rules`` that then fails to apply surfaces as a typed
-          :class:`EstatError` so you can fix it; a built-in or generic rule
-          that fails degrades to Layer D instead (``docs/DESIGN.md``
-          Decision B).
+          table cannot be structured (a low-confidence axis, or a shape the
+          generic rule declines). A rule you supplied that then fails to apply
+          surfaces as a typed :class:`EstatError`; a library-provided rule
+          degrades to Layer D instead (ARCHITECTURE.md).
         * ``"heuristic"`` — Layer D fallback. The axis classifier detects
           the ``time`` axis and normalizes it best-effort; every axis becomes
           a ``{code, label}`` cell. Raw codes are preserved (in each cell's

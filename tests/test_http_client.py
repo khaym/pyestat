@@ -144,8 +144,8 @@ class TestRetry:
         assert exc_info.value.attempts == 3
 
     def test_retries_on_429_and_408(self) -> None:
-        # 429 (rate limit) and 408 (request timeout) are the transient
-        # 4xx codes called out in DESIGN.md; everything else 4xx is the
+        # 429 (rate limit) and 408 (request timeout) are the only transient
+        # 4xx codes the client retries; everything else 4xx is the
         # caller's fault and must not be retried.
         for transient in (408, 429):
             responses = iter([httpx.Response(transient), httpx.Response(200, json={"ok": True})])
@@ -200,7 +200,7 @@ class TestRetry:
         assert client.request("/x", params={}) == {"ok": True}
 
     def test_backoff_schedule_follows_doubled_base(self) -> None:
-        # DESIGN.md commits to 0.5s → 1s → 2s. We verify the *sequence*,
+        # The client commits to a 0.5s → 1s → 2s backoff. We verify the *sequence*,
         # not the wall-clock delay, by capturing what the client asked
         # ``sleep`` to wait for.
         sleeps: list[float] = []

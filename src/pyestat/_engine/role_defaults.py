@@ -1,12 +1,11 @@
-"""Role-default registry and v2 transform registry (Layer A substance, #22).
+"""Role-default registry and v2 transform registry (Layer A substance).
 
 Two things live here, both feeding the output-schema-first v2 rules:
 
 * **The transform registry** — the named, per-column transforms a v2 rule
-  may reference. MVP ships the floor the design scopes: ``passthrough``
-  plus the existing time parsers (surfaced as transforms that emit the
-  normalized string, per Decision 3). #4 later registers the real
-  standard-code transforms (``iso8601`` / ``jis_x_0401`` / …).
+  may reference: ``passthrough`` plus the existing time parsers (surfaced as
+  transforms that emit the normalized string). Standard-code transforms
+  (``iso8601`` / ``jis_x_0401`` / …) can be registered here later.
 * **The role-default map** — for each :class:`AxisRole`, the transform a
   short-form column inherits when it names no transform of its own.
 
@@ -48,7 +47,7 @@ from pyestat.errors import RuleExpansionError
 
 
 # A transform maps one source value to its output cell. Kept deliberately
-# 1:1 (value → value); N:1 pivot is #10 and lives above this layer.
+# 1:1 (value → value); the N:1 pivot lives above this layer.
 Transform = Callable[[Any], Any]
 
 
@@ -94,13 +93,13 @@ TRANSFORMS.register("best_effort_time", _best_effort_time)
 
 # Time-format transforms that yield a full ``TimePoint`` (normalized value +
 # granularity), keyed by the same names the scalar ``TRANSFORMS`` registry
-# uses. The canonical time cell (#35) is built from these so a column's
+# uses. The canonical time cell is built from these so a column's
 # *declared* format drives both fields. The strict parsers raise
 # ``ValueError`` on a code whose shape does not match, which the apply path
 # turns into a typed ``TimeFormatError`` routed by provenance (a caller's
-# rule surfaces, a built-in degrades — Decision B). ``best_effort_time`` is
+# rule surfaces, a built-in degrades — ARCHITECTURE.md). ``best_effort_time`` is
 # the total role-default; the apply path dispatches it at bind time to
-# ``time_cell``'s auto-normalize (which consults the member name, #33), so
+# ``time_cell``'s auto-normalize (which consults the member name), so
 # its entry here marks membership — code-only callers can still resolve it
 # to ``best_effort``.
 TIME_PARSERS: dict[str, Callable[[str], "TimePoint | None"]] = {
@@ -114,8 +113,8 @@ TIME_PARSERS: dict[str, Callable[[str], "TimePoint | None"]] = {
 
 # Per-role default transform. Only ``time`` needs a non-trivial default
 # (a granularity-agnostic best-effort parse); every other role passes its
-# value through until #4 gives ``area`` a standard-code mapper. All entries
-# resolve to total transforms — see the module docstring.
+# value through (standard-code mapping for ``area`` is out of scope here).
+# All entries resolve to total transforms — see the module docstring.
 _ROLE_DEFAULT_TRANSFORM: dict[AxisRole, str] = {
     AxisRole.TIME: "best_effort_time",
 }
@@ -130,7 +129,7 @@ def default_transform(role: AxisRole) -> str:
 # Roles a bare column name may infer (Decision 1A). Excludes the two roles
 # that are not *directly addressable* output sources: ``unknown`` is a
 # classifier sentinel (never a real source), and ``meta-axis`` needs a
-# ``where`` predicate to pick a value (pivot, #10) so it cannot be a bare
+# ``where`` predicate to pick a value (pivot) so it cannot be a bare
 # short-form column. Both must be spelled out with an explicit source.
 _INFERABLE_ROLES: frozenset[AxisRole] = frozenset(
     {AxisRole.TIME, AxisRole.AREA, AxisRole.VALUE, AxisRole.CATEGORY}
@@ -189,8 +188,8 @@ def build_generic_rule(
     Two shapes are generated. A table with **no meta-axis** maps each axis to
     one 1:1 column: the ``value`` role reads the observation cell, every other
     role reads its own axis (addressed by axis id, so two axes of one role —
-    建築主 × 用途, #38 — each get a column). A table with **exactly one flat
-    meta-axis** is pivoted (#34): the non-meta axes stay 1:1 and the meta-axis
+    建築主 × 用途 — each get a column). A table with **exactly one flat
+    meta-axis** is pivoted: the non-meta axes stay 1:1 and the meta-axis
     is folded into one ``where`` column per member, so the table comes back one
     record per non-meta group (column = the member's NFKC-normalized name).
     Naming the pivot columns needs the member names, so a meta-axis table
@@ -202,7 +201,7 @@ def build_generic_rule(
     explicit disambiguation), a **hierarchical meta-axis** (its
     members carry a code hierarchy that folds a second dimension into them —
     trade's measure×period cross; flat-pivoting would spread it into columns,
-    so it rides Layer D and a rule (#37) reshapes it — see
+    so it rides Layer D and a rule reshapes it — see
     :func:`classifier.is_flat_axis`), a **VALUE role coexisting with the
     meta-axis** (the measure is already spread across the meta-axis, so a
     separate ``value`` column would read an arbitrary group member), or a
@@ -210,16 +209,16 @@ def build_generic_rule(
     axis id'd ``value``) — declining rather than letting :class:`RuleV2`'s
     duplicate-column validator raise on the auto path, which would break the
     "auto never raises" guarantee. (Several meta members sharing one name do
-    *not* collide — they coalesce into one column, #41; see :func:`_pivot_columns`.)
+    *not* collide — they coalesce into one column; see :func:`_pivot_columns`.)
 
     Every role-default is a total transform (see module docstring) and pivot
     columns are ``passthrough``, so no *transform* raises at apply time. The
-    pivot's member selection can still raise a typed ambiguity — a ``where``
-    matching several members that disagree on their value (trade's measure×period
-    cross, #37; or duplicate-name members that are not a benign equal-valued
-    coalesce, #41). That is a :class:`RuleAuthoringError`, which the auto path
-    catches and degrades to Layer D for a library-provided rule (Decision B), so
-    a generic rule never crashes the request — the Layer A guarantee.
+    pivot's member selection can still raise a typed :class:`RuleAuthoringError`
+    — a ``where`` matching several members that disagree on their value (trade's
+    measure×period cross; or duplicate-name members that are not a benign
+    equal-valued coalesce) — which the auto path degrades to Layer D for a
+    library-provided rule (ARCHITECTURE.md), so a generic rule never crashes the
+    request: the Layer A guarantee.
     """
     axes = classification.axes
     if not axes:
@@ -233,7 +232,7 @@ def build_generic_rule(
     non_meta = [axis for axis in axes if axis.role != AxisRole.META_AXIS]
     non_meta_roles = [axis.role for axis in non_meta]
     # On the 1:1 (no-meta) shape the observation cell exists on every e-Stat
-    # row whether or not a tab axis describes it (#33), so the column set
+    # row whether or not a tab axis describes it, so the column set
     # must read it exactly once; on the pivot shape the observation lives in
     # each member's where-column instead.
     nonmeta_cols = _one_to_one_columns(non_meta, ensure_value=not meta_axes)
@@ -270,9 +269,9 @@ def _one_to_one_columns(
 
     The ``value`` role becomes the ``value`` column (reading the observation
     cell, so it carries no axis); every other axis reads its own id and is
-    *addressed by that id* (#38), so two axes of one role — 建築主 × 用途 —
+    *addressed by that id*, so two axes of one role — 建築主 × 用途 —
     resolve to distinct columns instead of colliding on the role. With
-    ``ensure_value`` (the 1:1 rule shape, #33) the column set always reads the
+    ``ensure_value`` (the 1:1 rule shape) the column set always reads the
     observation cell exactly once: when no axis carries the VALUE role, a
     synthesized ``value`` column is appended — the observation exists on every
     e-Stat row whether or not a tab axis describes it, and without the column it
@@ -309,15 +308,15 @@ def _pivot_columns(
     cannot be named into distinct columns (so the table rides Layer D).
 
     Each column selects a member by its NFKC-normalized name — the same fold
-    the pivot apply path (#10) applies when matching ``where`` — so the
+    the pivot apply path applies when matching ``where`` — so the
     generated selector and the member it targets cannot drift. Declines when
     the meta-axis is **hierarchical** (its members carry a code hierarchy, so a
     second dimension is folded into them — trade's 合計/月次 × 数量/金額; a flat
-    pivot would spread it into columns, #34 flatness gate) or when no member
+    pivot would spread it into columns flatness gate) or when no member
     names are available (no ``class_objs`` or none for this axis: the columns
     would be unnamed and the measure silently dropped).
 
-    **Several members sharing one name coalesce into a single column** (#41).
+    **Several members sharing one name coalesce into a single column**.
     賃金構造 "DB" tables carry each measure twice — same name+unit under a second
     code block (a code-scheme vintage, not a second dimension); each cell
     populates one block, the one overlap year dual-codes identical values. One
@@ -333,7 +332,7 @@ def _pivot_columns(
     if obj is None or not is_flat_axis(obj):
         return None
     # De-duplicate by name, preserving first-seen order: same-named members are
-    # the same measure (#41), so they share one column the apply path coalesces.
+    # the same measure, so they share one column the apply path coalesces.
     members = list(dict.fromkeys(pivot_member_name(c) for c in obj.classes if "code" in c))
     if not members:
         return None

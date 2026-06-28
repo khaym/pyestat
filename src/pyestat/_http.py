@@ -3,7 +3,7 @@
 Owns connection setup, timeout, and retry. Higher layers consume parsed
 JSON dicts from this module and must not import ``httpx`` directly, so
 an ``AsyncEstatHttpClient`` variant can be added later without touching
-Layers 2-4 (see ARCHITECTURE.md, Decision H).
+Layers 2-4 (see ARCHITECTURE.md).
 """
 from __future__ import annotations
 

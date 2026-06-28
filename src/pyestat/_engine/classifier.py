@@ -1,19 +1,19 @@
-"""Axis classifier — Layer A keystone (PROPOSAL-AXIS-ROLE-INFERENCE, #21).
+"""Axis classifier — Layer A keystone.
 
 Given a table's axis metadata, label each axis with a *role* and a
 discrete *confidence tier*. The classifier judges **structure** (is an
 axis a time / area / value / meta-axis, or a plain category?) — not
 semantics: which meta-axis value maps to which named output column is a
-conversion-rule (#22) concern, and unit / aggregate are per-code
-attributes consumed downstream (#4 / pivot), not axis roles.
+conversion-rule concern, and unit / aggregate are per-code
+attributes consumed downstream (pivot, standard-code mapping), not axis roles.
 
-Two deliberate design choices, both from the accepted proposal:
+Two deliberate design choices:
 
-* **Deterministic heuristic, no LLM on the data path** (Open question 1).
+* **Deterministic heuristic, no LLM on the data path.**
   Roles fall out of e-Stat conventions (`time` / `area` axis ids), code
   shapes (10-digit dates vs 5-digit JIS), and the 表章項目 (`tab`)
   convention. The same metadata always yields the same classification.
-* **Confidence is a discrete tier, not a probability** (Open question 5).
+* **Confidence is a discrete tier, not a probability.**
   A tier records how many independent signals agreed: ``high`` when a
   role's defining signals concur, ``medium`` for a single strong signal,
   ``low`` when signals conflict or only the weakest evidence is present.
@@ -25,11 +25,11 @@ member names. This is the **mis-pivot guard**: ``@unit`` presence is *not*
 used as a trigger — population's 男女別 axis carries heterogeneous
 ``@unit`` yet is a category, and pivoting it would silently corrupt data.
 An ambiguous meta candidate is left ``unknown`` / ``low`` so the table
-falls to Layer D (raw rows preserved, #23) rather than being mis-pivoted.
+falls to Layer D (raw rows preserved) rather than being mis-pivoted.
 
 This module is a pure classifier. Routing the result — rule resolution
-by role pattern (#22), the Layer D fallback and ``rule="auto"`` semantics
-(#23) — lives downstream and is intentionally not here.
+by role pattern, the Layer D fallback and ``rule="auto"`` semantics
+ — lives downstream and is intentionally not here.
 """
 from __future__ import annotations
 
@@ -56,7 +56,7 @@ class AxisRole(str, Enum):
 
 
 class Confidence(str, Enum):
-    """How many independent signals agreed on a role (Open question 5)."""
+    """How many independent signals agreed on a role."""
 
     HIGH = "high"
     MEDIUM = "medium"
@@ -84,7 +84,7 @@ class TableClassification:
 
     @property
     def role_pattern(self) -> tuple[AxisRole, ...]:
-        """Ordered tuple of roles — the key #22 matches rules against."""
+        """Ordered tuple of roles — the key the resolver matches rules against."""
         return tuple(a.role for a in self.axes)
 
     def min_confidence(self) -> Confidence:
@@ -96,10 +96,10 @@ class TableClassification:
     def clears(self, threshold: Confidence = Confidence.MEDIUM) -> bool:
         """Weakest-link gate: every axis must reach ``threshold``.
 
-        The mechanism only (Open question 5, default ``medium`` — so only
+        The mechanism only (default ``medium`` — so only
         ``low`` axes route to Layer D). The refinement that *only axes a
         matched rule requires* must clear, plus the actual Layer D
-        routing, belong to #22 / #23.
+        routing, belong downstream to rule resolution and the Layer D fallback.
         """
         return _TIER_ORDER[self.min_confidence()] >= _TIER_ORDER[threshold]
 
@@ -111,7 +111,8 @@ class TableClassification:
 # ``1995100000``), so the *role* signal is the digit shape, not a parse.
 _DATE_CODE = re.compile(r"^\d{10}$|^\d{4}$")
 # JIS X 0401 municipality / prefecture codes are 5 digits. Foreign country
-# codes share the shape; both corroborate `area` (vocabulary is #4's job).
+# codes share the shape; both corroborate `area` (standard-code vocabulary
+# is out of scope here).
 _JIS_CODE = re.compile(r"^\d{5}$")
 
 _TIME_NAME_TOKEN = "時間軸"
@@ -121,7 +122,7 @@ _TAB_NAME_TOKEN = "表章項目"
 # Deliberately narrow: measure-spread words that mark one logical record
 # split across rows. Excludes 指数 / 比 / 性比 etc., which appear in
 # ordinary statistical *categories* (see the population mis-pivot trap).
-# Retired as the load-bearing meta signal (Open question 7): used only as a
+# Retired as the load-bearing meta signal: used only as a
 # metadata-only fallback (capped at medium) when data rows are unavailable.
 _MEASURE_SPREAD_TOKENS = ("数量", "金額", "単位", "価額")
 
@@ -177,9 +178,9 @@ def is_flat_axis(axis: ClassObj) -> bool:
     dimension into its members (trade's ``cat02``: 合計 / 各月 × 数量 / 金額 /
     単位) is hierarchical.
 
-    Layer A auto-pivots only a *flat* meta-axis (#34): flattening a
+    Layer A auto-pivots only a *flat* meta-axis: flattening a
     hierarchical one would spread the hidden dimension across columns, so it
-    rides Layer D instead and a rule (#37) reshapes it precisely. A ``@level``
+    rides Layer D instead and a rule reshapes it precisely. A ``@level``
     of ``""`` or ``"1"`` (the only level present) is *not* a hierarchy — the
     gate keys on a parent link or a deeper level, not on the field's presence.
     """
@@ -241,7 +242,7 @@ _CellProfile = Mapping[str, "list[int]"]
 def _is_unit_row_meta(profile: _CellProfile) -> bool:
     """A meta-axis signature: a pure unit-string member among numeric ones.
 
-    Vocabulary-free (Open question 7). ``True`` when, over the axis's
+    Vocabulary-free. ``True`` when, over the axis's
     members with informative (non-marker) cells, at least one member is a
     pure unit string (string cells, zero numeric — trade's 単位 → "ＮＯ")
     while at least one other member is numeric (数量 / 金額).
@@ -274,7 +275,7 @@ def _classify_meta_or_category(
         return AxisClassification(axis.id, AxisRole.CATEGORY, Confidence.MEDIUM, ("data: homogeneous cell types",))
 
     # Metadata-only fallback: the lexicon, no longer load-bearing, capped at
-    # medium (Open question 7).
+    # medium.
     name = _norm(axis.name)
     name_hit = any(tok in name for tok in _MEASURE_SPREAD_TOKENS)
     member_hits = sum(
@@ -336,7 +337,7 @@ def classify(
 
     ``rows`` are the table's fetched data rows (Layer 2's flattened form).
     When supplied, a non-``tab`` meta-axis is detected from the data via the
-    vocabulary-free unit-string signal (Open question 7); when omitted, the
+    vocabulary-free unit-string signal; when omitted, the
     classifier degrades to metadata-only heuristics.
 
     ``table_inf`` is accepted for the optional ``TITLE_SPEC``-prefix signal

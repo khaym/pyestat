@@ -1,11 +1,11 @@
-"""Tests for the v2 auto-path rule resolver (#28).
+"""Tests for the v2 auto-path rule resolver.
 
 ``resolve_v2`` chooses the rule to apply from a table's classification,
 walking Layers C (user > project) > B (builtin) > A (generic). It returns
 ``None`` to signal "route to Layer D" when the classification is too weak
 to trust or when no rule — specific or generic — could be produced; a
 non-``None`` result pairs the rule with the :class:`RuleLayer` it came
-from, the provenance the auto path uses to decide surface-vs-degrade (#32).
+from, the provenance the auto path uses to decide surface-vs-degrade.
 These tests pin both the chosen rule and its layer. The classifier output
 is built by hand here so resolution is exercised in isolation (the
 request-path plumbing is the endpoint's job).
@@ -106,7 +106,7 @@ class TestPrecedence:
 
 
 class TestAmbiguity:
-    """A same-layer conflict routes by provenance (#32): a caller-authored
+    """A same-layer conflict routes by provenance: a caller-authored
     layer surfaces it, a library layer degrades rather than crashes."""
 
     def test_caller_authored_conflict_surfaces(self) -> None:
@@ -157,7 +157,7 @@ class TestLayerAFallback:
 
     def test_meta_axis_with_class_objs_builds_generic_pivot(self) -> None:
         # Given the member names, the Layer A fallback auto-generates a pivot
-        # rule (#34) instead of declining — an uncovered meta-axis table now
+        # rule instead of declining — an uncovered meta-axis table now
         # resolves to a GENERIC rule that folds it rather than to Layer D.
         meta = TableClassification((
             _axis("cat01", AxisRole.CATEGORY),
@@ -176,7 +176,7 @@ class TestLayerAFallback:
 
 class TestStatsCodeNarrowing:
     """A rule may pin ``match.stats_code`` so it fires only on its survey
-    family (#29). ``role_pattern`` stays the authority; ``stats_code`` is an
+    family. ``role_pattern`` stays the authority; ``stats_code`` is an
     extra AND-narrowing that keeps a family-specific rule (whose selectors are
     tied to one survey's member names) from claiming a structurally identical
     table from another family."""

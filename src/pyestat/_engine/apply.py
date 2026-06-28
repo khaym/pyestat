@@ -52,12 +52,12 @@ def apply_rule(
     caller — see :func:`apply_auto`):
 
     * ``None`` — raw mode; the flattened Layer 2 rows pass through.
-    * ``"heuristic"`` — **Layer D** (#23): best-effort ``time``
+    * ``"heuristic"`` — **Layer D**: best-effort ``time``
       normalization plus additive labels, preserving raw data.
     * :class:`RuleV2` — a v2 output-schema rule applied against the
       ``classification`` (which axis plays which role).
 
-    ``classification`` is the request-path classification (#28); the
+    ``classification`` is the request-path classification; the
     Layer D and v2 modes need it. When a standalone caller omits it, it is
     computed from the rows here so those modes stay self-contained.
 
@@ -84,19 +84,16 @@ def apply_auto(
     resolved: "ResolvedRule | None",
 ) -> tuple[dict[str, Any], ...]:
     """Apply the ``rule="auto"`` decision, surfacing or degrading an
-    application failure by the resolved rule's provenance.
+    application failure by the resolved rule's provenance (ARCHITECTURE.md).
 
     ``resolved`` is the resolver's output: a :class:`ResolvedRule` (the rule
     paired with the layer it came from) or ``None`` (route to Layer D). When
     applying the rule fails with a :class:`RuleAuthoringError` (a role
     missing or ambiguous, a short-form column that cannot expand, or a
-    transform name the registry lacks), the layer decides what happens: a
-    caller-authored rule (user / project) surfaces the error so the caller
-    can fix it; a library-provided rule (builtin / generic) degrades to
-    Layer D, since the caller cannot fix it and preserved data beats a
-    crash. Catching the shared base means a future authoring-error leaf is
-    routed by the same policy without editing this clause. See
-    ``docs/DESIGN.md`` Decision B.
+    transform name the registry lacks), a caller-authored layer re-raises
+    and a library-provided one degrades to Layer D. Catching the shared base
+    routes any future authoring-error leaf by the same policy without editing
+    this clause.
 
     Other exceptions are *not* caught: a registered transform raising at
     runtime is a real bug, not an authoring error, and surfaces regardless
@@ -120,18 +117,18 @@ def _apply_layer_d(
     class_objs: Sequence[ClassObj],
     classification: TableClassification,
 ) -> tuple[dict[str, Any], ...]:
-    """Layer D — the no-rule fallback (#23): preserve data, normalize nothing
+    """Layer D — the no-rule fallback: preserve data, normalize nothing
     structural.
 
-    The axis ``classification`` (computed once on the request path, #28, not
+    The axis ``classification`` (computed once on the request path, not
     a hand-written rule) decides which axis is ``time``. Output is the
-    canonical nested form (#35): every classified axis becomes a
+    canonical nested form: every classified axis becomes a
     ``{code, label}`` cell — the ``time`` axis a full :func:`time_cell` — and
     the observation becomes a ``{value, unit}`` measure. Raw codes stay in
     each cell's ``code``, the value is never coerced, and a code no parser
     recognises keeps ``normalized == code`` — Layer D never raises and never
     drops a row. ``area`` is passed through as a plain dimension;
-    standard-code mapping is task #4's job.
+    standard-code mapping is out of scope here.
     """
     time_axes = frozenset(
         a.axis_id for a in classification.axes if a.role == AxisRole.TIME
@@ -192,17 +189,17 @@ def _label(codes: dict[str, str], code: Any) -> Any:
     return codes.get(code, code) if isinstance(code, str) else code
 
 
-# --- v2 application (output-schema-first, #22) ------------------------------
+# --- v2 application (output-schema-first) ------------------------------
 #
 # Application needs the *classification* (which axis plays which role) to
 # resolve each column's ``source.role`` to an axis; the request-path wiring
-# that runs the classifier and feeds it here is #28, so this function takes
+# that runs the classifier and feeds it here is the pipeline, so this function takes
 # the classification as an argument and stays testable in isolation.
 #
 # Two shapes share this entry point. The default is 1:1 — one output row per
 # input row — where a referenced role must resolve to exactly one axis. When a
-# column's ``meta-axis`` source carries a ``where`` predicate, the rule pivots
-# (#10): rows are folded by the non-meta axes into one record per group and
+# column's ``meta-axis`` source carries a ``where`` predicate, the rule pivots:
+# rows are folded by the non-meta axes into one record per group and
 # each predicate selects a member's cell. ``class_objs`` carries the meta-axis
 # member names the predicate matches against (by NFKC-normalized name).
 
@@ -216,8 +213,8 @@ def apply_v2_rule(
     """Apply a v2 rule's output-column declarations to ``values``.
 
     Expands the rule defensively first, so a short-form rule (e.g. a
-    Layer A rule #28 builds in memory) applies without a separate load
-    step. A rule with any ``where``-predicate column pivots (N:1, #10);
+    Layer A rule the resolver builds in memory) applies without a separate load
+    step. A rule with any ``where``-predicate column pivots (N:1);
     otherwise each input row maps to one output row (1:1).
 
     Raises a :class:`RuleAuthoringError` when the rule cannot be applied as
@@ -254,15 +251,15 @@ def _apply_pivot(
     lookup: dict[str, dict[str, str]],
 ) -> tuple[dict[str, Any], ...]:
     """Fold meta-axis-spread rows into one record per non-meta group, plus any
-    grain a ``key`` derives (#10, #37).
+    grain a ``key`` derives.
 
     Groups ``values`` by the codes of every non-meta axis. A ``key`` column
-    (#37) lifts a value out of each member's *name* (the trade cross encodes
+    lifts a value out of each member's *name* (the trade cross encodes
     the month only there, e.g. ``"1月_金額"``) and adds it to the grain, so one
     group can emit several rows — one per derived key. Within each
     (group, grain) record:
 
-    * non-meta columns read the group's shared codes as canonical cells (#35);
+    * non-meta columns read the group's shared codes as canonical cells;
     * a ``key`` column emits its derived value;
     * each ``where`` column **filters** the members of that record to the one
       matching its predicate (name / parent name / level — AND) and surfaces
@@ -433,7 +430,7 @@ def _build_record(
     (``base``), the derived-key columns, and each ``where`` measure.
 
     A ``where`` selects its single member within ``candidates`` (the period
-    grain); ``unit_from`` (#39) reads the unit across ``group_rows`` (the whole
+    grain); ``unit_from`` reads the unit across ``group_rows`` (the whole
     group), because the unit member (単位2) carries no period grain and so lives
     outside ``candidates``. A ``where`` matching nothing leaves a stable ``None``
     column (CPI's retired weight series) rather than dropping the record;
@@ -468,9 +465,9 @@ def _select_one_member(
 
     Counts *distinct* members, not rows: a member duplicated within one pool (a
     malformed response, or an axis outside the role pattern) collapses to its
-    first row — the pre-#37 graceful behavior. Several *different* members
+    first row — the earlier graceful behavior. Several *different* members
     matching one predicate **coalesce when they surface the same ``(value,
-    unit)``** (#41): 賃金構造 "DB" tables dual-code one measure under two member
+    unit)``**: 賃金構造 "DB" tables dual-code one measure under two member
     codes for a code-scheme vintage, so the overlap year carries identical
     values under both — one observation, not a conflict. Only members that
     genuinely *disagree* are an ambiguity the caller must narrow, raised via
@@ -512,7 +509,7 @@ def _broadcast_unit(
     pool: Sequence[dict[str, Any]],
     meta_id: str,
 ) -> Any:
-    """The unit string a ``unit_from`` (#39) broadcasts into a measure: the
+    """The unit string a ``unit_from`` broadcasts into a measure: the
     *value* of the one grain-less member its predicate selects across the
     group.
 
@@ -523,8 +520,7 @@ def _broadcast_unit(
     predicate matching no member yields ``None`` — the same graceful stance a
     ``where`` matching nothing takes — while several *distinct* members that
     disagree on their value is an ambiguity the author must narrow (mirrors the
-    ``where`` multi-match error; distinct members sharing one value coalesce,
-    #41).
+    ``where`` multi-match error; distinct members sharing one value coalesce).
     """
     row = _select_one_member(
         predicate,
@@ -567,7 +563,7 @@ def _resolve_meta_axis(
     """The single meta-axis id and its members-by-code for a pivot, or a typed
     :class:`RoleResolutionError`.
 
-    A pivot folds exactly one meta-axis (#10/#37); zero or several is not
+    A pivot folds exactly one meta-axis; zero or several is not
     pivotable here, and ``where``/``key`` need class metadata to match members
     by name.
     """
@@ -643,8 +639,7 @@ def _resolve_transform(column: str, name: str) -> Callable[[Any], Any]:
     the auto path's typed-error handling and crash the caller. Wrapping it
     here — the one place a rule's transform name meets the registry — keeps
     the contract that an unknown transform is a typed, provenance-routed
-    authoring error (see ``docs/DESIGN.md`` Decision B), not a stray
-    ``KeyError``.
+    authoring error (see ARCHITECTURE.md), not a stray ``KeyError``.
     """
     try:
         return TRANSFORMS.resolve(name)
@@ -655,8 +650,8 @@ def _resolve_transform(column: str, name: str) -> Callable[[Any], Any]:
 
 
 def _validate_transform(column: str, name: str) -> None:
-    """Assert a transform name is known (typo → :class:`UnknownTransformError`,
-    #32) *without* binding the callable — for a column whose canonical cell is
+    """Assert a transform name is known (typo → :class:`UnknownTransformError`)
+    *without* binding the callable — for a column whose canonical cell is
     built structurally and never runs the scalar transform (a dimension's raw
     code; a time cell, whose parser comes from :data:`TIME_PARSERS`). Spelling
     this out as a name-check, not an unused ``_resolve_transform`` binding,
@@ -676,7 +671,7 @@ def _apply_transform(transform: Callable[[Any], Any], raw: Any) -> Any:
 class AxisBinding:
     """A non-meta output column resolved to a concrete axis and its cell shape,
     computed once before row iteration so the per-row reader never re-decides
-    role-vs-id (#38).
+    role-vs-id.
 
     ``axis_id`` is ``None`` exactly for VALUE, which reads the observation cell
     rather than an axis. META_AXIS never produces a binding — it flows through
@@ -694,7 +689,7 @@ def _bind_axis(
 ) -> AxisBinding:
     """Resolve one output column's ``source`` to an :class:`AxisBinding` up
     front, owning the addressing rule the engine had split across role- and
-    id-based paths (#38).
+    id-based paths.
 
     A column names an axis id, or — naming none — falls back to the role's
     single axis (:func:`_single_axis`, which rejects a role that is absent or
@@ -711,7 +706,7 @@ def _bind_axis(
     if role == AxisRole.META_AXIS:
         raise RoleResolutionError(
             role=role.value,
-            reason="a meta-axis output column needs a `where` predicate to select a member (#10)",
+            reason="a meta-axis output column needs a `where` predicate to select a member",
         )
     if role == AxisRole.VALUE:
         return AxisBinding(col.column, role, None, col.transform)
@@ -737,7 +732,7 @@ def _resolve_source(
     lookup: dict[str, dict[str, str]],
 ) -> Callable[[dict[str, Any]], Any]:
     """Bind one resolved column (:class:`AxisBinding`) to a per-row reader that
-    returns a *canonical cell* (#35).
+    returns a *canonical cell*.
 
     The cell shape follows the column's role (the axis it reads was already
     resolved by :func:`_bind_axis`):
@@ -748,15 +743,15 @@ def _resolve_source(
       Layer 2's flattened row; its ``unit`` is the sibling cell. The declared
       transform runs on the magnitude.
     * **TIME** — a full :func:`time_cell` whose ``normalized`` / ``granularity``
-      are driven by the column's *declared* format (#35). ``best_effort_time``
+      are driven by the column's *declared* format. ``best_effort_time``
       (the role-default) is total — an unrecognised code is kept raw. A
       declared *strict* format (e.g. ``monthly_e_stat``) that the data's shape
       violates raises a typed :class:`TimeFormatError`, routed by provenance
-      (caller's rule surfaces, built-in degrades — Decision B), so a declared
-      format is honored rather than silently replaced by a best-effort guess.
+      (caller's rule surfaces, built-in degrades — ARCHITECTURE.md), so a
+      declared format is honored rather than silently replaced by a guess.
     * **AREA / CATEGORY** — a ``{code, label}`` dimension. The label comes
-      from the class metadata, falling back to the code. (#4 will add a
-      standard-code field additively; today these are passthrough.)
+      from the class metadata, falling back to the code; these are
+      passthrough (no standard-code mapping).
     """
     role = binding.role
     if role == AxisRole.VALUE:
@@ -773,7 +768,7 @@ def _resolve_source(
         return _time_reader(binding, codes)
 
     # AREA / CATEGORY — passthrough dimension. Validate the transform name so a
-    # typo still surfaces (#32); #4 will give area a standard-code field.
+    # typo still surfaces. No standard-code mapping for area here.
     _validate_transform(binding.column, binding.transform)
 
     def read(row: dict[str, Any]) -> Any:
@@ -790,19 +785,19 @@ def _time_reader(
     column's declared format.
 
     The declared transform drives the time object. Order matters: the name is
-    validated first (a typo surfaces as :class:`UnknownTransformError`, #32),
+    validated first (a typo surfaces as :class:`UnknownTransformError`),
     then mapped to a :class:`TimePoint`-returning parser. A name that is a
     valid transform but not a time format is a :class:`TimeFormatError`.
     ``best_effort_time`` is total; a strict parser raising ``ValueError`` on a
     shape mismatch becomes a :class:`TimeFormatError` — both routed by
-    provenance on the auto path (Decision B).
+    provenance on the auto path (ARCHITECTURE.md).
     """
     _validate_transform(binding.column, binding.transform)  # typo → UnknownTransformError, first
     axis_id = binding.axis_id
     if binding.transform == "best_effort_time":
         # The total role-default is time_cell's auto-normalize, which
         # consults the member's display name — the only signal that
-        # separates a year-span code from a month (#33). Dispatched here,
+        # separates a year-span code from a month. Dispatched here,
         # at bind time, so the per-row reader has exactly one job (a
         # non-string code takes time_cell's same raw-keeping path).
         def read_best_effort(row: dict[str, Any]) -> Any:
@@ -849,7 +844,7 @@ def _single_axis(
     A role-addressed (no ``axis`` id) non-meta column must resolve to exactly
     one axis. Zero axes (a rule asking for a role the table lacks) and several
     axes (a repeated non-meta role, which is addressed by id instead — see
-    :func:`_bind_axis`, #38) both fail as typed
+    :func:`_bind_axis`) both fail as typed
     :class:`RoleResolutionError`\\ s so the auto path can route to Layer D.
     """
     axes = role_to_axes.get(role, [])
@@ -864,7 +859,7 @@ def _single_axis(
             reason=(
                 f"multiple axes are classified as {role.value} ({axes}); "
                 "address one by axis id (source.axis) to pick which column "
-                "reads which (#38)"
+                "reads which"
             ),
         )
     return axes[0]

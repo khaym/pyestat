@@ -1,4 +1,4 @@
-"""Aggregate vs. detail row selection (#36).
+"""Aggregate vs. detail row selection.
 
 e-Stat encodes a code hierarchy with ``@parentCode``: a member that another
 member names as its parent has children — it is an *aggregate* (a total or
@@ -23,8 +23,8 @@ Two deliberate choices, both deterministic:
   on at least one axis), so the two selections partition the rows.
 
 Only the dimension axes (``category`` / ``area``) range over the selection:
-``time`` granularity is #33's concern, a ``meta-axis`` hierarchy is the
-pivot's to fold (#37), and a ``value`` axis carries no code hierarchy. This
+``time`` granularity is the time normalizer's concern, a ``meta-axis`` hierarchy is the
+pivot's to fold, and a ``value`` axis carries no code hierarchy. This
 keeps the selection orthogonal to the conversion rule — it filters the raw
 rows before any rule runs, so ``"auto"``, a built-in, a custom rule, and raw
 mode all honor it uniformly.
@@ -40,7 +40,7 @@ from pyestat._engine.classifier import AxisRole, TableClassification
 AggregateSelection = Literal["include", "exclude", "only"]
 
 # The roles whose code hierarchy this selection ranges over. time is
-# granularity (#33), a meta-axis is the pivot's domain (#37), value carries no
+# granularity, a meta-axis is the pivot's domain, value carries no
 # codes — so the dimension roles are the only ones a parent/leaf split applies
 # to.
 _DIMENSION_ROLES = frozenset({AxisRole.CATEGORY, AxisRole.AREA})
@@ -74,7 +74,7 @@ def select_rows(
     class_objs: Sequence[ClassObj],
     selection: AggregateSelection,
 ) -> tuple[dict[str, Any], ...]:
-    """Filter ``values`` to detail rows, aggregate rows, or all (#36).
+    """Filter ``values`` to detail rows, aggregate rows, or all.
 
     * ``"include"`` — every row, unchanged (the default; backward compatible).
     * ``"exclude"`` — drop the aggregates: keep rows that are a leaf on every

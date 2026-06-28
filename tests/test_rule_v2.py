@@ -1,14 +1,14 @@
 """Tests for the v2 (output-schema-first) rule schema, its short-form
-expansion, and the loader's version gate (task #22).
+expansion, and the loader's version gate.
 
-v2 is the only schema the engine speaks (#30 retired v1): the format
+v2 is the only schema the engine speaks (v1 was retired): the format
 Layer B (built-in) and Layer C (project) rules are written in, and the
-format the rule-authoring Skill (#8) generates. A v2 rule declares the
+format the rule-authoring Skill generates. A v2 rule declares the
 *output columns* the caller receives, not the input table structure —
 so these tests pin the accepted long form, the short form sugar, and
 exactly where a malformed rule fails loud.
 
-The four-layer wiring that *selects* a v2 rule by role pattern is #28.
+The four-layer wiring that *selects* a v2 rule by role pattern lives in the resolver.
 Here we only exercise the schema, the expansion, and the loader gate.
 """
 from __future__ import annotations
@@ -49,8 +49,8 @@ def _long(**overrides) -> dict:
 class TestRuleV2Schema:
     def test_long_form_parses(self) -> None:
         # The fully-explicit form is the canonical shape every short
-        # form expands into; pinning it fixes the contract #28 applies
-        # against and #8 generates.
+        # form expands into; pinning it fixes the contract the resolver applies
+        # against and the authoring Skill generates.
         rule = RuleV2.model_validate(_LONG)
         assert rule.schema_version == "2"
         assert rule.match.role_pattern == [AxisRole.TIME, AxisRole.AREA, AxisRole.VALUE]
@@ -76,7 +76,7 @@ class TestRuleV2Schema:
         assert rule.match.stats_code is None
 
     def test_match_stats_code_narrows_to_one_family(self) -> None:
-        # A family-specific rule (#29) pins the e-Stat statsCode so a
+        # A family-specific rule pins the e-Stat statsCode so a
         # structurally identical table from another survey does not match it;
         # role_pattern stays present as the matching authority.
         rule = RuleV2.model_validate(
@@ -111,7 +111,7 @@ class TestRuleV2Schema:
 
 
 class TestPivotWhereSchema:
-    """The ``where`` predicate (#10) selects one meta-axis member for a
+    """The ``where`` predicate selects one meta-axis member for a
     pivot column. It is valid only on a ``meta-axis`` source, matches on the
     member *name* (the apply step NFKC-normalizes), and is modeled as an
     object so future selectors stay additive."""
@@ -156,7 +156,7 @@ class TestPivotWhereSchema:
             ))
 
     def test_parent_and_level_selectors_parse(self) -> None:
-        # #37 widens `where` beyond name equality: a trade rule selects a
+        # `where` widens beyond name equality: a trade rule selects a
         # measure family by its parent member's name (合計_金額) and a depth
         # by @level — neither is expressible as an `equals`. Both coexist
         # with `equals` and are combined as AND when several are given.
@@ -189,7 +189,7 @@ class TestPivotWhereSchema:
 
 
 class TestPivotKeySchema:
-    """The ``key`` selector (#37) derives a grain dimension from a meta-axis
+    """The ``key`` selector derives a grain dimension from a meta-axis
     member's name via a regex, so a measure×period cross folds without naming
     every member. Like ``where`` it is valid only on a ``meta-axis`` source,
     and a column is *either* a grain key *or* a value selector, never both."""
@@ -262,7 +262,7 @@ class TestPivotKeySchema:
 
 
 class TestPivotUnitFromSchema:
-    """The ``unit_from`` selector (#39) fills the unit of the measure a
+    """The ``unit_from`` selector fills the unit of the measure a
     ``where`` surfaces, reading it from a grain-less unit member (trade ships
     a quantity's unit as a level-1 member, not an ``@unit``). It reuses the
     ``where`` predicate vocabulary, is valid only on a ``meta-axis`` source,
@@ -322,7 +322,7 @@ class TestPivotUnitFromSchema:
 
 
 class TestAxisIdAddressing:
-    """A source addresses an axis two ways (#38): by *role* (the default —
+    """A source addresses an axis two ways: by *role* (the default —
     resolves to the single axis of that role) or by *axis id* (``axis:``,
     picking one of several same-role axes). Id addressing is what lets a table
     with two ``category`` axes — 建築主 × 用途, 職種 × 企業規模 — map each to its
@@ -420,7 +420,7 @@ class TestShortFormExpansion:
         assert rule.output[1].transform == "passthrough"
 
     def test_unspecified_source_infers_role_from_column_name(self) -> None:
-        # Fullest short form (#22 decision 1A): a bare column name doubles
+        # Fullest short form: a bare column name doubles
         # as its role, so the canonical {time, area, value} table needs no
         # source/transform at all.
         rule = expand_short_form(
@@ -440,7 +440,7 @@ class TestShortFormExpansion:
         # column named "year" must spell out its source; omitting it is an
         # author error that fails loud at load — never a silent miss. This
         # bites only authoring/explicit contexts: the auto path keeps
-        # Layer D as its escape hatch (#28).
+        # Layer D as its escape hatch.
         with pytest.raises(RuleExpansionError, match="year"):
             expand_short_form(
                 RuleV2.model_validate(_long(output=[{"column": "year"}]))
@@ -450,7 +450,7 @@ class TestShortFormExpansion:
         # AxisRole accepts "unknown" and "meta-axis" as enum values, but
         # neither is a directly addressable output source: "unknown" is a
         # classifier sentinel, and "meta-axis" needs a where-predicate
-        # pivot (#10). A bare column so named must NOT silently bind to the
+        # pivot. A bare column so named must NOT silently bind to the
         # sentinel role — it is an authoring error that must spell out an
         # explicit source.
         for name in ("unknown", "meta-axis"):
@@ -472,7 +472,7 @@ class TestShortFormExpansion:
         assert rule.output[0].source.role == AxisRole.CATEGORY
 
     def test_meta_axis_where_column_keeps_where_and_defaults_passthrough(self) -> None:
-        # A pivot column (#10) names a meta-axis source with a `where`
+        # A pivot column names a meta-axis source with a `where`
         # selector and usually omits the transform. Expansion must preserve
         # the predicate and fill the meta-axis role-default (passthrough) —
         # the selected member's cell is surfaced verbatim, not parsed.
@@ -538,7 +538,7 @@ class TestYamlRuleLoader:
         assert rule.output[0].transform == "best_effort_time"
 
     def test_v1_file_fails_fast(self, tmp_path: Path) -> None:
-        # #30 retired the never-published v1 schema: a leftover v1 file is
+        # The never-published v1 schema was retired: a leftover v1 file is
         # now an unknown version, so it fails loud at load time rather than
         # silently getting a stale interpretation.
         p = self._write(

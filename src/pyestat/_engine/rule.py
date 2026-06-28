@@ -32,7 +32,7 @@ class _Strict(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-# --- v2: output-schema-first rules (PROPOSAL-AXIS-ROLE-INFERENCE, #22) ------
+# --- v2: output-schema-first rules -----------------------------------
 #
 # v2 inverts v1: instead of describing the input axes, a rule declares the
 # *output columns* the caller receives. Each column draws on an axis *role*
@@ -50,8 +50,8 @@ class MetaWhere(_Strict):
     fields are given. All three are matched against signals an author can
     read in the metadata, never the opaque table-specific code:
 
-    * ``equals`` — the member's own *name* (#10).
-    * ``parent`` — its parent member's *name* (#37). The trade cross
+    * ``equals`` — the member's own *name*.
+    * ``parent`` — its parent member's *name*. The trade cross
       (``cat02``) groups months under a measure family (``合計_金額``); a
       family is selectable only by the parent's name, not by any one
       member's.
@@ -79,7 +79,7 @@ class MetaWhere(_Strict):
 
 
 class MetaKey(_Strict):
-    """Derives a grain dimension from a meta-axis member's name (#37).
+    """Derives a grain dimension from a meta-axis member's name.
 
     ``pattern`` is a regex run against the member's NFKC-normalized name; its
     first capture group (or the whole match if it has none) becomes the
@@ -123,7 +123,7 @@ class RoleSource(_Strict):
     cell shape (a time cell, a ``{code, label}`` dimension, a ``{value, unit}``
     measure) and its default transform regardless of how the axis is picked.
 
-    *Which* axis the role draws from is resolved two ways (#38):
+    *Which* axis the role draws from is resolved two ways:
 
     * **By role (the default)** — ``axis`` is ``None``; the role must resolve
       to exactly one axis in the table. This is the common case (one ``time``,
@@ -142,12 +142,12 @@ class RoleSource(_Strict):
     on one column — they have opposite jobs); both select *within* a single
     meta-axis, a separate concern from ``axis`` picking *which* axis:
 
-    * ``where`` — a filter (#10/#37): rows are folded by the non-meta axes
+    * ``where`` — a filter: rows are folded by the non-meta axes
       (and any ``key`` grain) and the predicate picks which member's cell
       this column receives.
-    * ``key`` — a grain dimension (#37): the column's value is derived from
+    * ``key`` — a grain dimension: the column's value is derived from
       the member name and adds a row dimension to fold the cross around.
-    * ``unit_from`` — a unit source (#39): a ``where``-style predicate that
+    * ``unit_from`` — a unit source: a ``where``-style predicate that
       picks a *grain-less* meta member (trade ships a quantity's unit as a
       level-1 ``単位2`` member, its value the unit string) and folds that
       value into this measure's ``unit``. It modifies the measure ``where``
@@ -201,7 +201,7 @@ class RoleSource(_Strict):
         if self.unit_from is not None and self.where is None:
             raise ValueError(
                 "`unit_from` fills the unit of the measure a `where` surfaces, "
-                "so it needs a `where` on the same column (#39)"
+                "so it needs a `where` on the same column"
             )
         return self
 
@@ -224,18 +224,18 @@ class MatchV2(_Strict):
     """v2 narrowing predicate: the ordered role pattern a table must show,
     optionally narrowed to one statistic family.
 
-    The resolver (#28, ``resolve_v2``) compares ``role_pattern`` against the
+    The resolver (``resolve_v2``) compares ``role_pattern`` against the
     classifier's ``role_pattern``; axis ids never appear, which is what
     collapses the rule count from O(tables) to O(role patterns).
 
-    ``stats_code`` is an optional **additional** narrowing (#29): set, the rule
+    ``stats_code`` is an optional **additional** narrowing: set, the rule
     fires only on tables whose e-Stat ``statsCode`` (the survey-family code in
     ``TABLE_INF.STAT_NAME.@code``) equals it. ``role_pattern`` stays the
     matching authority — a ``statsCode`` spans up to ~30 distinct structures so
-    it over-matches alone (PROPOSAL-AXIS-ROLE-INFERENCE keeps it a non-
+    it over-matches alone (it stays a non-
     authoritative fast-path narrowing, never a sole matcher). It exists so a
     family-specific rule whose selectors are tied to one survey's member names
-    (foreign trade's ``合計_金額`` / ``単位2`` / month-name pivot, #29) declines a
+    (foreign trade's ``合計_金額`` / ``単位2`` / month-name pivot) declines a
     structurally identical table from another family rather than fold it into
     empty rows. Omitted (the default), the rule matches by role pattern alone —
     the common case that keeps the bundle at O(role patterns).

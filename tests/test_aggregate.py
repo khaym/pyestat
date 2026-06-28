@@ -1,4 +1,4 @@
-"""Tests for aggregate vs. detail row selection (#36).
+"""Tests for aggregate vs. detail row selection.
 
 These tests encode the business rule a caller relies on: in a table whose
 codes form a hierarchy (総数 → 大分類 → 品目, or 全国 → 都道府県), summing a
@@ -14,7 +14,7 @@ dimensions a row is detail only when it is a leaf on *every* one (AND) — the
 safe grain for the cross — so ``"only"`` is the exact complement.
 
 Only the dimension axes (``category`` / ``area``) range over the selection:
-``time`` granularity is #33's concern, a ``meta-axis`` is the pivot's, and a
+``time`` granularity is the time normalizer's concern, a ``meta-axis`` is the pivot's, and a
 ``value`` axis carries no code hierarchy.
 """
 from __future__ import annotations
@@ -152,7 +152,7 @@ class TestAxisScope:
 
     def test_meta_axis_hierarchy_is_left_to_the_pivot(self) -> None:
         # trade's cat02 carries @parentCode (合計_金額 over its months), but as a
-        # meta-axis it is the pivot's to fold (#37) — the aggregate selection
+        # meta-axis it is the pivot's to fold — the aggregate selection
         # must not touch it, or it would drop the 合計 rows a pivot needs.
         meta = _axis(
             "cat02", "数量・金額",

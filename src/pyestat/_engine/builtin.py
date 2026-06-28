@@ -5,8 +5,8 @@ Reads every ``*.yaml`` under :mod:`pyestat.rules.builtin` into
 works when pyestat is installed from a wheel (where the YAML files
 sit inside ``site-packages``) as well as from a working tree.
 
-#30 removed the never-published v1 built-in rules; #29 ships the one
-benchmark table Layer A cannot fold on its own — foreign trade's
+The never-published v1 built-in rules were retired; the bundle now
+ships the one benchmark table Layer A cannot fold on its own — foreign trade's
 hierarchical measure×period cross — as two rules, one per structural
 group of the trade family (品別国別表 and 税関別). GDP and the population
 estimates structure generically via Layer A, so the bundle carries only

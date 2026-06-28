@@ -1,4 +1,4 @@
-"""Tests for the pivot's isolated business rules (#10, #37, #39, #40).
+"""Tests for the pivot's isolated business rules.
 
 The pivot folds meta-axis-spread rows into one record per non-meta group.
 ``_apply_pivot`` decomposes into the units tested here — selecting the single

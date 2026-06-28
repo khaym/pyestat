@@ -1,4 +1,4 @@
-"""Tests for the canonical output contract and its flat projection (#35).
+"""Tests for the canonical output contract and its flat projection.
 
 ``canonical`` is the single home for "what one converted row looks like".
 Every conversion path (Layer D, v2 1:1, v2 pivot) builds its cells through
@@ -35,7 +35,7 @@ class TestConstructors:
         # The Done shape: raw code, e-Stat display label, ISO-leaning
         # normalized value, and the granularity tag, all in one object.
         # The label's range marker flags an October-start annual aggregate
-        # (#33), so the granularity is yearly despite the monthly code shape.
+        #, so the granularity is yearly despite the monthly code shape.
         assert time_cell("2006001010", "2006年10月～2007年9月") == {
             "code": "2006001010",
             "label": "2006年10月～2007年9月",
@@ -49,7 +49,7 @@ class TestTimeCellIsTotal:
         # A code no built-in parser accepts: the cell is still well-formed
         # (normalized == code, granularity None) so the shape is stable and
         # no path raises. (The fiscal shape 1995100000 parses as a plain
-        # year since #33, so an unclaimed separator stands in here.)
+        # year, so an unclaimed separator stands in here.)
         cell = time_cell("1995300000", "1995年度?")
         assert cell["normalized"] == "1995300000"
         assert cell["granularity"] is None
@@ -75,7 +75,7 @@ class TestFlatProjection:
             "time": "2006-10",
             "time_code": "2006001010",
             "time_label": "2006年10月～2007年9月",
-            "time_granularity": "yearly",  # range-marked label = year span (#33)
+            "time_granularity": "yearly",  # range-marked label = year span
         }
 
     def test_non_conventional_time_axis_suffixes_granularity_by_key(self) -> None:
@@ -106,7 +106,7 @@ class TestFlatProjection:
         }
 
     def test_missing_pivot_measure_stays_none(self) -> None:
-        # A dropped meta member surfaces as None (the #10 contract); flatten
+        # A dropped meta member surfaces as None (the pivot contract); flatten
         # leaves it as a single None column, not an exploded pair.
         out = to_flat_rows(({"unit": None, "quantity": measure("7", "ＮＯ")},))
         assert out[0] == {"unit": None, "quantity": "7", "quantity_unit": "ＮＯ"}

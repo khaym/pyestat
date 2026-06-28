@@ -2,7 +2,7 @@
 
 Registry is a tiny name-to-impl lookup. These tests exercise the
 primitive in isolation with throwaway instances, so a future second
-instance (e.g. #4's STANDARD_CODES) can be added without surprise. The
+instance (e.g. a future STANDARD_CODES) can be added without surprise. The
 live production instance — ``role_defaults.TRANSFORMS`` — has its own
 content/behavior coverage in ``test_role_defaults.py``.
 """

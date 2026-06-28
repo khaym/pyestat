@@ -1,8 +1,8 @@
-"""Tests for the post-fetch transformation pipeline (#40).
+"""Tests for the post-fetch transformation pipeline.
 
 ``run_pipeline`` owns the order — classify → aggregate-select → resolve →
 apply — and the Layer A–D routing plus the surface-vs-degrade error policy
-(``docs/DESIGN.md`` Decision B). These tests encode that routing rule directly
+(ARCHITECTURE.md). These tests encode that routing rule directly
 on hand-built rows + class metadata, with **no HTTP transport to mock** — the
 behavior a caller observes through ``EstatClient.get_stats_data`` minus the
 fetch. Extracting the pipeline out of the endpoint is what makes this possible.
@@ -74,7 +74,7 @@ def _has_measure(row: dict[str, Any]) -> bool:
 
 
 def _has_time_cell(row: dict[str, Any]) -> bool:
-    # A time cell carries the #33 granularity tag, not just a normalized string;
+    # A time cell carries the granularity tag, not just a normalized string;
     # require both so a dropped granularity is caught.
     return any(
         isinstance(v, dict) and {"normalized", "granularity"} <= v.keys()
@@ -100,7 +100,7 @@ class TestModeRouting:
         # The generic 1:1 rule folds the single-member `tab` axis into the
         # measure, so `tab` is absent — the shape that distinguishes Layer A.
         assert all(set(r) == {"time", "area", "value"} for r in out)
-        # The yearly code's granularity survives the structuring (#33).
+        # The yearly code's granularity survives the structuring.
         time_cells = [v for r in out for v in r.values() if "granularity" in v]
         assert all(c["granularity"] == "yearly" for c in time_cells)
 
@@ -116,7 +116,7 @@ class TestModeRouting:
 
 class TestProvenanceRouting:
     """A caller-authored rule that fails surfaces; a library-provided one
-    degrades to Layer D (Decision B) — the same input, routed by provenance."""
+    degrades to Layer D (ARCHITECTURE.md) — the same input, routed by provenance."""
 
     def test_auto_surfaces_a_caller_authored_rule_failure(self) -> None:
         with pytest.raises(RuleAuthoringError):
@@ -131,7 +131,7 @@ class TestProvenanceRouting:
 
 class TestStatsCodeWiring:
     """``run_pipeline`` lifts the table's statsCode out of ``TABLE_INF`` and
-    hands it to resolution, so a family-scoped built-in (#29) can fire only on
+    hands it to resolution, so a family-scoped built-in can fire only on
     its own survey. Without this wiring a ``match.stats_code`` rule could never
     match on the auto path."""
 

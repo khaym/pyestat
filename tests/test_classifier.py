@@ -1,10 +1,9 @@
-"""Tests for the axis classifier (Layer A keystone, task #21).
+"""Tests for the axis classifier (Layer A keystone).
 
 The classifier labels each axis of an e-Stat table with a *role*
 (time / area / value / category / meta-axis / unknown) and a discrete
 *confidence tier* (high / medium / low), deterministically, from table
-metadata alone — no LLM, no network (PROPOSAL-AXIS-ROLE-INFERENCE Open
-question 1).
+metadata alone — no LLM, no network.
 
 These tests encode the business rules of role inference. The headline
 rule is the **mis-pivot guard**: an axis that genuinely splits one
@@ -130,7 +129,7 @@ class TestAreaRole:
 
     def test_foreign_country_axis_is_still_area(self) -> None:
         # Trade's area axis carries country codes, not JIS — the role is
-        # still `area`; the code *vocabulary* is task #4's concern.
+        # still `area`; the code *vocabulary* is out of scope here.
         country = _axis("area", "国", ("50103", "103_大韓民国"), ("50106", "106_台湾"))
         assert _role(classify([country]), "area") == AxisRole.AREA
 
@@ -162,7 +161,7 @@ class TestTabAxis:
 class TestMisPivotGuard:
     def test_trade_cat02_is_meta_axis(self) -> None:
         # Axis name (数量・金額) and member names (単位 / 数量 / 金額) carry the
-        # measure-spread lexicon → a genuine meta-axis, pivotable by #22.
+        # measure-spread lexicon → a genuine meta-axis, pivotable by a rule.
         tc = classify([_TRADE_META])
         assert _role(tc, "cat02") == AxisRole.META_AXIS
         assert tc.clears()  # ≥ medium, so it does not fall to Layer D
@@ -209,7 +208,7 @@ class TestCategoryAndAggregation:
 
     def test_classification_is_deterministic(self) -> None:
         # No randomness / LLM on the data path: identical input → identical
-        # output, every time (Open question 1).
+        # output, every time.
         axes = [_TAB_MULTI, _TRADE_META, _AREA_AXIS, _TIME_AXIS]
         assert classify(axes) == classify(axes)
 
@@ -220,7 +219,7 @@ class TestCategoryAndAggregation:
 class TestDataDrivenMeta:
     """When the fetched data rows are supplied, a non-tab meta-axis is found
     structurally — a unit-string member coexisting with numeric members —
-    with no Japanese keyword lexicon (PROPOSAL Open question 7)."""
+    with no Japanese keyword lexicon."""
 
     def test_unit_string_member_makes_meta_without_vocabulary(self) -> None:
         # Generic axis name (no 数量/金額/単位): the ONLY signal is that one
@@ -270,8 +269,8 @@ class TestDataDrivenMeta:
 
 class TestRepresentativeTables:
     """Pin the role pattern of one representative table per surveyed
-    statsCode. These are the "確認できる" checks of #21's success
-    condition; systematic gold-set scoring is #24."""
+    statsCode. These are the "確認できる" checks of the classifier's success
+    condition; systematic gold-set scoring is out of scope here."""
 
     def test_cpi_tab_is_meta(self) -> None:
         cpi = [
@@ -355,7 +354,7 @@ class TestRepresentativeTables:
 class TestIsFlatAxis:
     """``is_flat_axis`` reads e-Stat's @level / @parentCode to tell a clean,
     flat measure axis (the 表章項目 convention) from a *cross* axis that folds
-    a second dimension into its members (trade's 合計/月次 × 数量/金額). The #34
+    a second dimension into its members (trade's 合計/月次 × 数量/金額). The
     auto-pivot fires only on a flat meta-axis; a hierarchical one rides Layer D.
 
     Business rule confirmed by the 2026-06 survey (8 statsCodes, 186 axes):
