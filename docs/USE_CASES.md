@@ -34,16 +34,16 @@ all of them as primary:
 
 ## Shared barriers and pyestat's approach
 
-| Barrier | Approach (cross-reference) |
+| Barrier | Approach |
 |---|---|
-| User doesn't know which table to look at | `getStatsList` support (Decision G); future intent-based search helper |
-| Table structure varies per table | Rule-driven transformation (DESIGN.md, Decisions A–E) |
-| Code-value knowledge required (time/area/items) | Built-in rules + standard-code normalization (task #4) |
-| Aggregate and detail codes intermixed | `exclude_aggregate` (planned rule extension, Decision D) |
-| 100k-row pagination per response | Auto-fetch-all with `max_rows` warning (Decision I) |
-| `time` representation varies by table | Built-in time parsers + granularity metadata (Decision D) |
-| `value` type varies within one response | `value.type: conditional` (planned rule extension, Decision D) |
-| Table is not yet covered by a rule | Heuristic fallback: parse axes best-effort and return raw values; rules can be added later via Skill (#8) and project-local YAML (#15) |
+| User doesn't know which table to look at | `getStatsList` support; a future intent-based search helper |
+| Table structure varies per table | Rule-driven transformation: role classification plus role-pattern rules over four resolution layers (see ARCHITECTURE.md) |
+| Code-value knowledge required (time/area/items) | Built-in rules and the axis classifier attach human-readable labels to coded axes |
+| Aggregate and detail codes intermixed | Detail / aggregate row selection in hierarchical tables |
+| 100k-row pagination per response | Auto-fetch-all with a `max_rows` guard |
+| `time` representation varies by table | Built-in time parsers plus `granularity` metadata |
+| `value` type varies within one response | A `meta-axis` pivot folds the varying measures into typed columns, each carrying its own unit |
+| Table is not yet covered by a rule | Lossless fallback preserves every row; add a rule via project-local `./pyestat_rules` YAML, or a planned authoring Skill (#8) |
 
 ## Originating context
 

@@ -4,7 +4,13 @@ Python client for the [e-Stat API](https://www.e-stat.go.jp/api/) — the offici
 
 ## Status
 
-Phase 0 (Walking Skeleton). The public API is minimal and may change.
+pyestat is pre-1.0. Two parts of the surface move at different speeds:
+
+- **Settled** — what you *consume*: the nested `StatsDataResponse` shape
+  (with its `to_flat()` projection) and the `EstatError` hierarchy hold
+  across 0.x.
+- **Evolving** — what you *author*: the `RuleV2` rule schema may still
+  change across 0.x as built-in coverage grows.
 
 ## Why another e-Stat library?
 
@@ -127,8 +133,36 @@ predicate is a projection: meta-axis members you do not select (e.g. a
 table's monthly breakdowns when you keep only the annual totals) are dropped
 from the output — declare a column for every member you need.
 
-Loading rules from `./rules/*.yaml` is on the roadmap; for now the
-`RuleV2` object is constructed directly in Python.
+You can also drop rule files in a directory instead of building them in
+Python: `EstatClient` discovers `./pyestat_rules/*.yaml` (and `.yml`) by
+file placement alone — no registration call. Each file is the same schema
+as the `RuleV2` above, written as YAML.
+
+- Relocate the directory with `project_rules_dir=`, or opt out with
+  `None` / `""`.
+- An invalid rule file raises `RuleLoadError` at construction, so a typo
+  surfaces immediately rather than at query time.
+
+## Error behavior
+
+On the default `rule="auto"` path, whether a *rule* failure reaches you
+turns on who authored the failing rule — fall back when it is pyestat's,
+surface when it is yours:
+
+- A **built-in** rule that cannot apply degrades to lossless raw output
+  instead of raising: its failure is internal and you cannot edit it, so
+  preserved data beats a crash.
+- A rule **you** supplied — an explicit `rule=RuleV2(...)`, a
+  `user_rules=` entry, or a file in `./pyestat_rules` — that cannot apply
+  raises a typed error so you can fix it and re-run.
+
+So `get_stats_data(id)` on a table pyestat does not yet handle returns
+usable raw rows rather than failing, while a mistake in your own rule is
+reported.
+
+Every pyestat error inherits from `EstatError`, so a coarse
+`except EstatError` catches them all; catch a leaf (`EstatApiError`,
+`RuleLoadError`, …) when you want to act on one case.
 
 ## Configuring the appId
 
