@@ -1,6 +1,6 @@
 # pyestat Use Cases
 
-Last revised: 2026-05-31. For evaluators deciding whether pyestat fits
+Last revised: 2026-06-28. For evaluators deciding whether pyestat fits
 their workflow, and for maintainers scoping features against real
 demand. Documents the user-facing scenarios pyestat is built to serve,
 so feature scoping can be measured against actual needs rather than
@@ -41,9 +41,10 @@ all of them as primary:
 | Code-value knowledge required (time/area/items) | Built-in rules and the axis classifier attach human-readable labels to coded axes |
 | Aggregate and detail codes intermixed | Detail / aggregate row selection in hierarchical tables |
 | 100k-row pagination per response | Auto-fetch-all with a `max_rows` guard |
+| Whole table is millions of rows; only a slice is wanted | Server-side narrowing (planned): pass e-Stat's `cd*` / `lv*` selectors through `getStatsData` so only the requested items / area / period come back |
 | `time` representation varies by table | Built-in time parsers plus `granularity` metadata |
 | `value` type varies within one response | A `meta-axis` pivot folds the varying measures into typed columns, each carrying its own unit |
-| Table is not yet covered by a rule | Lossless fallback preserves every row; add a rule via project-local `./pyestat_rules` YAML, or a planned authoring Skill (#8) |
+| Table is not yet covered by a rule | Lossless fallback preserves every row; add a rule via project-local `./pyestat_rules` YAML, or a planned authoring Skill |
 
 ## Originating context
 

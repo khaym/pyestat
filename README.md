@@ -77,6 +77,9 @@ HTTP-200 error channel.
 - Search the catalog by keyword or code — `list_stats` (`searchWord`,
   `statsCode`, …).
 - Look at a table's axes before you download it — `get_meta_info`.
+- Fetch only the slice you need — `select` narrows a huge table server-side by
+  item / region / period, so the consumer price index (~13M rows) returns the
+  few hundred you asked for, keyed by the same axis ids `get_meta_info` shows.
 - Pull a large table without loading it all into memory — `iter_stats_data_pages`
   yields one page at a time. Stop a runaway query before it downloads with
   `max_rows` (raises `TooManyRowsError`), and track a long pull with a `progress`
@@ -176,6 +179,36 @@ df = pd.DataFrame(flat)
 Pass `rule=None` instead to get e-Stat's raw rows unchanged (`@`-prefixed
 dimensions become plain keys, `"$"` becomes `"value"`) — flat scalars, no
 labels or normalization.
+
+### Fetching one slice of a large table
+
+Some tables are too big to pull whole — the consumer price index is millions of
+rows across every item, region, and period. `select` filters server-side, keyed
+by the axis ids `get_meta_info` reports, so you fetch only the slice you want:
+
+```python
+# 総合 (all items) × 全国 (nationwide) × 指数 (the index), annual rows only
+resp = client.get_stats_data(
+    "0003427113",  # 2020-base CPI — ~13M rows unfiltered
+    select={"cat01": "0001", "area": "00000", "tab": "1", "time": {"level": "1"}},
+)
+# a few hundred rows, structured exactly as above — not the whole catalog
+```
+
+A `select` value is a code, a list of codes, or a mapping setting any of
+`code` / `level` (a single level or a range) / `from` / `to` (an inclusive
+code range) — each key optional, as the example's `time: {"level": "1"}`
+shows. The codes are e-Stat's own — pyestat passes them through as-is, with no
+catalog lookup, so a wrong code isn't flagged client-side; e-Stat just returns
+no rows for it. Read the codes off `get_meta_info`:
+
+```python
+for axis in client.get_meta_info("0003427113").class_objs:
+    print(axis.id, axis.name, len(axis.classes))  # axis id, name, member count
+```
+
+The result is an ordinary response — `to_flat()` it into `pandas` and take
+your analysis from there.
 
 ## Writing your own rules
 

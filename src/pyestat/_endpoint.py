@@ -196,6 +196,96 @@ def _check_status(result: Mapping[str, Any]) -> None:
         raise EstatApiError(status=status, message=result.get("ERROR_MSG", ""))
 
 
+_SELECT_SPEC_KEYS = frozenset({"code", "level", "from", "to"})
+
+
+def _codes_param(axis_id: str, value: Any) -> str:
+    """Comma-join one or more member codes, rejecting an empty or non-string
+    code: an empty ``cd<Axis>=`` is a no-op e-Stat ignores (returning the whole
+    table), so it is a :class:`ValueError`, not a silent full fetch."""
+    codes = [value] if isinstance(value, str) else value
+    if not isinstance(codes, (list, tuple)) or not codes:
+        raise ValueError(
+            f"select[{axis_id!r}] code must be a non-empty str or list of str; "
+            f"got {value!r}"
+        )
+    if any(not isinstance(c, str) or c == "" for c in codes):
+        raise ValueError(
+            f"select[{axis_id!r}] codes must be non-empty strings; got {value!r}"
+        )
+    return ",".join(codes)
+
+
+def _scalar_param(axis_id: str, key: str, value: Any) -> str:
+    """A single non-empty string for a ``level`` / ``from`` / ``to`` spec key."""
+    if not isinstance(value, str) or value == "":
+        raise ValueError(
+            f"select[{axis_id!r}][{key!r}] must be a non-empty str; got {value!r}"
+        )
+    return value
+
+
+def _select_to_params(select: "Mapping[str, Any] | None") -> dict[str, str]:
+    """Translate the axis-id-keyed ``select`` into e-Stat narrowing params.
+
+    Each key is an axis id as it appears in ``CLASS_INF`` (``cat01``,
+    ``area``, ``time`` …) — the same id ``get_meta_info`` and the parsed
+    rows expose — so a caller never writes the wire-only ``cd`` / ``lv``
+    prefix, which appears in no response. The value selects members of that
+    axis:
+
+    * ``str`` or list of ``str`` — member codes, emitted as ``cd<Axis>``
+      (a list becomes e-Stat's comma-joined form).
+    * mapping with ``code`` / ``level`` / ``from`` / ``to`` — ``code`` as
+      above; ``level`` as ``lv<Axis>`` (a single level ``"1"`` or a range
+      ``"1-3"``); ``from`` / ``to`` as the ``cd<Axis>From`` / ``cd<Axis>To``
+      code-range endpoints.
+
+    ``<Axis>`` is the axis id with its first letter upper-cased
+    (``cat01`` → ``cdCat01``, ``time`` → ``cdTime``). The codes are passed
+    through to e-Stat as-is: pyestat does not check them against the table's
+    catalog (it stays stateless), so an unknown code is e-Stat's to answer —
+    normally with zero rows — the way ``list_stats`` forwards its params. Only
+    the *shape* is validated, and entirely client-side: a value that is not a
+    str / list / mapping, an empty or non-string code, or a mapping with an
+    unknown (or no) key raises :class:`ValueError` before any request, the way
+    :class:`EstatClient` rejects bad constructor arguments.
+    """
+    if not select:
+        return {}
+    params: dict[str, str] = {}
+    for axis_id, spec in select.items():
+        axis = axis_id[:1].upper() + axis_id[1:]
+        if isinstance(spec, (str, list, tuple)):
+            params[f"cd{axis}"] = _codes_param(axis_id, spec)
+        elif isinstance(spec, Mapping):
+            unknown = set(spec) - _SELECT_SPEC_KEYS
+            if unknown:
+                raise ValueError(
+                    f"select[{axis_id!r}] has unknown keys {sorted(unknown)}; "
+                    f"allowed: {sorted(_SELECT_SPEC_KEYS)}"
+                )
+            if not spec.keys() & _SELECT_SPEC_KEYS:
+                raise ValueError(
+                    f"select[{axis_id!r}] mapping must set at least one of "
+                    f"{sorted(_SELECT_SPEC_KEYS)}; got {spec!r}"
+                )
+            if "code" in spec:
+                params[f"cd{axis}"] = _codes_param(axis_id, spec["code"])
+            if "level" in spec:
+                params[f"lv{axis}"] = _scalar_param(axis_id, "level", spec["level"])
+            if "from" in spec:
+                params[f"cd{axis}From"] = _scalar_param(axis_id, "from", spec["from"])
+            if "to" in spec:
+                params[f"cd{axis}To"] = _scalar_param(axis_id, "to", spec["to"])
+        else:
+            raise ValueError(
+                f"select[{axis_id!r}] must be a str, a list of str, or a mapping "
+                f"with code/level/from/to; got {type(spec).__name__}"
+            )
+    return params
+
+
 # --- client ----------------------------------------------------------------
 
 
@@ -276,6 +366,7 @@ class EstatClient:
         self,
         stats_data_id: str,
         *,
+        select: "Mapping[str, Any] | None" = None,
         rule: "RuleV2 | Literal['auto', 'heuristic'] | None" = "auto",
         aggregates: Literal["include", "exclude", "only"] = "include",
         max_rows: int | None = None,
@@ -287,7 +378,23 @@ class EstatClient:
         each axis is a ``{code, label}`` cell (``time`` adds ``normalized`` /
         ``granularity``) and the observation is a ``{value, unit}`` measure.
         Call :meth:`StatsDataResponse.to_flat` for the one-column-per-field
-        flat shape (pandas). ``rule`` selects the transformation mode:
+        flat shape (pandas).
+
+        ``select`` narrows the fetch *server-side*. Key it by axis id as
+        :meth:`get_meta_info` reports it (``cat01`` / ``area`` / ``time`` …);
+        the value is a code or list of codes, or a mapping with ``code`` /
+        ``level`` / ``from`` / ``to`` (the last two a code range). e-Stat then
+        returns only the matching members, so a multi-million-row table (CPI,
+        foreign trade) reduces to the slice you want — and the ``max_rows``
+        probe weighs that filtered size. The codes are e-Stat's own, read from
+        :meth:`get_meta_info`; ``select`` passes them through as-is — no label
+        or year resolution, and no client-side catalog check, so the client
+        stays stateless and an unknown code is e-Stat's to answer (normally
+        with zero rows), the way ``list_stats`` forwards its params. A
+        malformed ``select`` (empty or non-string code, unknown mapping key)
+        raises :class:`ValueError` before any request.
+
+        ``rule`` selects the transformation mode:
 
         * ``"auto"`` (default) — classify the table's axes, then resolve a
           rule through Layers C > B > A > D: a matching v2 rule
@@ -333,10 +440,14 @@ class EstatClient:
         and the call raises :class:`TooManyRowsError` before any data page
         is downloaded if the table exceeds the cap.
         """
+        # Shape-validate ``select`` up front (a malformed selector raises here,
+        # before any request) and reuse the narrowed params for the count
+        # probe — the probe must weigh the *filtered* table, not the whole one.
+        narrow = _select_to_params(select)
         if max_rows is not None:
             payload = self._http.request(
                 "/getStatsData",
-                params={"statsDataId": stats_data_id, "cntGetFlg": "Y"},
+                params={"statsDataId": stats_data_id, "cntGetFlg": "Y", **narrow},
             )
             root = payload["GET_STATS_DATA"]
             _check_status(root["RESULT"])
@@ -346,7 +457,11 @@ class EstatClient:
                     stats_data_id=stats_data_id, total=total, limit=max_rows
                 )
 
-        pages = list(self.iter_stats_data_pages(stats_data_id, progress=progress))
+        pages = list(
+            self.iter_stats_data_pages(
+                stats_data_id, select=select, progress=progress
+            )
+        )
         first = pages[0]
         values = tuple(v for p in pages for v in p.values)
         # Imported lazily so the (L3 → L2) dependency direction stays
@@ -379,22 +494,26 @@ class EstatClient:
         self,
         stats_data_id: str,
         *,
+        select: "Mapping[str, Any] | None" = None,
         progress: Callable[[ProgressEvent], None] | None = None,
     ) -> Iterator[Page]:
         """Yield each ``NEXT_KEY`` page one at a time.
 
         Lower-level than :meth:`get_stats_data`: callers can stream a
-        3.8M-row table without materializing the whole list. ``progress``
-        is fired *after* each page has been parsed, so a tqdm bridge
-        sees the count reflect what was actually received.
+        3.8M-row table without materializing the whole list. ``select``
+        narrows the fetch server-side (see :meth:`get_stats_data`), so every
+        page carries the same filter. ``progress`` is fired *after* each page
+        has been parsed, so a tqdm bridge sees the count reflect what was
+        actually received.
         """
+        narrow = _select_to_params(select)
         next_key: int | None = None
         page_number = 0
         rows_fetched = 0
         page_size: int | None = None
         while True:
             page_number += 1
-            params: dict[str, Any] = {"statsDataId": stats_data_id}
+            params: dict[str, Any] = {"statsDataId": stats_data_id, **narrow}
             if next_key is not None:
                 params["startPosition"] = next_key
             payload = self._http.request("/getStatsData", params=params)
@@ -443,8 +562,9 @@ class EstatClient:
     def get_meta_info(self, stats_data_id: str) -> MetaInfoResponse:
         """Fetch axis metadata without downloading data.
 
-        Lets a caller inspect a table's axes before committing to a
-        potentially huge fetch.
+        Lets a caller inspect a table's axes — and read the codes a
+        ``select`` filter uses — before committing to a potentially huge
+        fetch.
         """
         payload = self._http.request(
             "/getMetaInfo", params={"statsDataId": stats_data_id}

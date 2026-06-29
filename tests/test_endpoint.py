@@ -21,6 +21,7 @@ from pyestat._endpoint import (
     Page,
     StatsDataResponse,
     StatsListResponse,
+    _select_to_params,
 )
 from pyestat._http import EstatHttpClient, ProgressEvent
 from pyestat._errors import EstatApiError, TooManyRowsError
@@ -306,6 +307,132 @@ class TestMaxRowsGuard:
         client.get_stats_data("0003448237", max_rows=None)
         assert len(captured) == 1
         assert "cntGetFlg" not in captured[0].url.params
+
+
+# --- select narrowing ------------------------------------------------------
+
+
+class TestSelectToParams:
+    """``select`` is the axis-id-keyed narrowing surface. It maps to e-Stat's
+    ``cd*`` / ``lv*`` / ``From``-``To`` query params so a caller filters by the
+    same axis ids and codes they read from ``get_meta_info`` — never the
+    wire-only ``cd`` / ``lv`` convention that appears in no response."""
+
+    def test_bare_code_string_maps_to_cd_param(self) -> None:
+        assert _select_to_params({"cat01": "0001"}) == {"cdCat01": "0001"}
+
+    def test_code_list_joins_with_commas(self) -> None:
+        # e-Stat takes several codes on one axis as a comma-joined cd* value.
+        assert _select_to_params({"area": ["00000", "13A01"]}) == {"cdArea": "00000,13A01"}
+
+    def test_dict_spec_maps_level_and_code_range(self) -> None:
+        # level -> lv<Axis>; from/to -> the cd<Axis>From / cd<Axis>To code range.
+        assert _select_to_params(
+            {"time": {"level": "1", "from": "2015000000", "to": "2024000000"}}
+        ) == {
+            "lvTime": "1",
+            "cdTimeFrom": "2015000000",
+            "cdTimeTo": "2024000000",
+        }
+
+    def test_dict_code_key_is_equivalent_to_bare_codes(self) -> None:
+        assert _select_to_params({"cat01": {"code": ["0001", "0002"]}}) == {"cdCat01": "0001,0002"}
+
+    def test_each_axis_id_capitalizes_into_its_param(self) -> None:
+        # cat02 -> cdCat02, tab -> cdTab: first letter up, rest verbatim.
+        assert _select_to_params({"tab": "1", "cat02": "100"}) == {"cdTab": "1", "cdCat02": "100"}
+
+    def test_none_and_empty_yield_no_params(self) -> None:
+        assert _select_to_params(None) == {}
+        assert _select_to_params({}) == {}
+
+    def test_unknown_dict_key_raises_value_error(self) -> None:
+        # A typo'd sub-key is a programming error, surfaced loudly rather than
+        # silently dropped — matching EstatClient's ValueError on bad ctor args.
+        with pytest.raises(ValueError, match="unknown"):
+            _select_to_params({"time": {"lavel": "1"}})
+
+    def test_non_str_list_or_mapping_value_raises_value_error(self) -> None:
+        with pytest.raises(ValueError):
+            _select_to_params({"cat01": 1})
+
+    def test_empty_code_is_rejected_not_sent_as_a_no_op_filter(self) -> None:
+        # An empty cd<Axis>= is silently ignored by e-Stat (returns the whole
+        # table), so an empty string / empty list code must raise, not slip
+        # through as a no-op that fetches everything.
+        for empty in ("", [], {"code": ""}, {"code": []}):
+            with pytest.raises(ValueError):
+                _select_to_params({"area": empty})
+
+    def test_non_string_code_raises_value_error_not_typeerror(self) -> None:
+        # A scalar int code (e.g. losing a leading zero) is a programming error;
+        # it must be the documented ValueError, never a raw TypeError.
+        with pytest.raises(ValueError):
+            _select_to_params({"cat01": {"code": 5}})
+        with pytest.raises(ValueError):
+            _select_to_params({"cat01": ["0001", 5]})
+
+    def test_empty_mapping_spec_raises_value_error(self) -> None:
+        with pytest.raises(ValueError):
+            _select_to_params({"cat01": {}})
+
+
+class TestSelectNarrowsServerSide:
+    """``get_stats_data`` forwards ``select`` to e-Stat so the API returns only
+    the requested slice: the count probe and every data page carry the filter,
+    and the narrowed rows still parse through the normal pipeline."""
+
+    def _payload(self, values: list[dict[str, str]], total: int) -> dict[str, Any]:
+        return {
+            "GET_STATS_DATA": {
+                "RESULT": {"STATUS": 0, "ERROR_MSG": ""},
+                "STATISTICAL_DATA": {
+                    "RESULT_INF": {"TOTAL_NUMBER": total},
+                    "TABLE_INF": {"@id": "T"},
+                    "CLASS_INF": {"CLASS_OBJ": []},
+                    "DATA_INF": {"VALUE": values},
+                },
+            }
+        }
+
+    def test_data_request_carries_narrowing_params(self) -> None:
+        client, captured = _make_client(self._payload([{"@cat01": "0001", "$": "1"}], 1))
+        client.get_stats_data("T", select={"cat01": "0001", "time": {"level": "1"}}, rule=None)
+        params = captured[0].url.params
+        assert params["cdCat01"] == "0001"
+        assert params["lvTime"] == "1"
+
+    def test_count_probe_carries_the_same_narrowing(self) -> None:
+        # max_rows runs a cntGetFlg=Y probe first; it must reflect the SAME
+        # filter, or the guard would weigh the size of the unfiltered table.
+        count = {
+            "GET_STATS_DATA": {
+                "RESULT": {"STATUS": 0, "ERROR_MSG": ""},
+                "STATISTICAL_DATA": {"RESULT_INF": {"TOTAL_NUMBER": 5}},
+            }
+        }
+        client, captured = _make_client(count, self._payload([{"@cat01": "0001", "$": "1"}], 5))
+        client.get_stats_data("T", select={"cat01": "0001"}, max_rows=100, rule=None)
+        assert captured[0].url.params["cntGetFlg"] == "Y"
+        assert captured[0].url.params["cdCat01"] == "0001"
+
+    def test_narrowed_rows_still_parse(self) -> None:
+        # Narrowing only changes which rows e-Stat returns; the @/$ parse is
+        # unaffected, so the result is the usual structured shape.
+        client, _ = _make_client(self._payload([{"@cat01": "0001", "$": "126"}], 1))
+        resp = client.get_stats_data("T", select={"cat01": "0001"}, rule=None)
+        assert resp.values == ({"cat01": "0001", "value": "126"},)
+
+    def test_iter_pages_carries_narrowing_params(self) -> None:
+        client, captured = _make_client(self._payload([{"@a": "1"}], 1))
+        list(client.iter_stats_data_pages("T", select={"area": "00000"}))
+        assert captured[0].url.params["cdArea"] == "00000"
+
+    def test_malformed_select_raises_before_any_request(self) -> None:
+        client, captured = _make_client()
+        with pytest.raises(ValueError):
+            client.get_stats_data("T", select={"time": {"bogus": "x"}})
+        assert captured == []
 
 
 # --- meta info -------------------------------------------------------------
