@@ -72,37 +72,53 @@ HTTP-200 error channel.
 
 ### What you get
 
-**Find and fetch the table you need**
+**Get e-Stat's scattered data into a shape you can analyze**
 
-- Search the catalog by keyword or code — `list_stats` (`searchWord`,
-  `statsCode`, …).
-- Look at a table's axes before you download it — `get_meta_info`.
-- Fetch only the slice you need — `select` narrows a huge table server-side by
-  item / region / period, so the consumer price index (~13M rows) returns the
-  few hundred you asked for, keyed by the same axis ids `get_meta_info` shows.
-- Pull a large table without loading it all into memory — `iter_stats_data_pages`
-  yields one page at a time. Stop a runaway query before it downloads with
-  `max_rows` (raises `TooManyRowsError`), and track a long pull with a `progress`
-  callback.
+*The default `rule="auto"` — no rule to write. Codes come back resolved to their
+labels and values to their units; on top of that:*
 
-**Get back data you can use, not codes to decode**
+- One observation split across rows, folded back into one row — e-Stat returns
+  each measure on its own row; pyestat detects which columns are keys and which
+  are measures to fold, and returns one record with a column per measure.
+- Mixed time formats lined up so you can compare them — e-Stat returns years,
+  months, and quarters in a different format per table, as opaque codes
+  (`2020000000`, `1994000103`). pyestat normalizes them to `2020` / `2020-03`
+  / `1994-Q1` and tags the granularity (yearly / monthly / quarterly), so you can
+  sort and join across granularities and across tables.
 
-*The default — `rule="auto"`, no rule to write.*
+  ```python
+  # e-Stat: the quarter arrives as an opaque time code (meaning lives in CLASS_INF)
+  {"@time": "1994000103", ...}          # CLASS_INF label: "1994年1～3月期"
 
-- Read `男女計`, not `000` — every code arrives with its label, the `CLASS_INF`
-  lookup already done.
-- Sort and group on time directly — dates come back normalized with their
-  granularity tagged (`2020`, yearly / monthly / …).
-- Treat one observation as one row — when e-Stat spreads a measure across several
-  rows, you get them back together, each measure in its own column to read across
-  (GDP, CPI, housing starts, trade). A table pyestat can't structure yet comes
-  back as plain raw rows, never an error.
-- Keep only the figures you want to sum — `aggregates="exclude"` drops the
-  subtotal and total rows, `"only"` keeps just the totals.
+  # pyestat: normalized so you can sort and align it, with the granularity tagged
+  {"time": {"code": "1994000103", "label": "1994年1～3月期",
+            "normalized": "1994-Q1", "granularity": "quarterly"}, ...}
+  ```
+
+- Keep only the figures you can sum — `aggregates="exclude"` drops the
+  subtotal and total rows, `"only"` keeps just the totals, so you never
+  double-count by summing a subtotal back in.
+
+**Pull just the slice you need from a huge table**
+
+- Millions of rows narrowed to the few hundred you want — `select` filters
+  server-side by item / region / period, so the consumer price index (~13M rows
+  unfiltered) returns only the rows you ask for, keyed by the same axis ids
+  `get_meta_info` shows.
+- A large table without loading it all into memory — `iter_stats_data_pages`
+  yields one page at a time. Cap a runaway pull with `max_rows` (raises
+  `TooManyRowsError`), and track a long one with a `progress` callback.
+
+**Find the table you need**
+
+- Locate the table you want in the catalog by keyword or code — `list_stats`
+  (`searchWord`, `statsCode`, …).
+- Check a table's axes (the codes you filter on) before you fetch it —
+  `get_meta_info`.
 
 **Hand off to your tools**
 
-- Get one column per field for pandas and friends — `to_flat()`.
+- One column per field for pandas and friends — `to_flat()`.
 
 Hit a table pyestat doesn't fold yet, or want column names of your own? That is a
 short rule away — see [Writing your own rules](#writing-your-own-rules).
