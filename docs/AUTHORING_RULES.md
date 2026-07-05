@@ -51,9 +51,14 @@ exp = client.explain_table("0004049327")
 exp.role_pattern    # ('category', 'meta-axis', 'area', 'time')
 exp.coverage        # 'builtin' | 'user' | 'project' | 'generic' | 'fallback'
 exp.proposed_rule   # a RuleV2 to hand-edit, or None when none can be generated
-for a in exp.axes:
-    print(a.axis_id, a.role, a.confidence, a.signals)
+for axis in exp.meta.class_objs:            # the facts: axis id/name + members
+    role = exp.roles[axis.id]               # the interpretation, keyed by axis id
+    print(axis.id, axis.name, role.role, role.confidence, role.signals)
 ```
+
+`explain_table` returns the metadata it fetched on `exp.meta` (a
+`MetaInfoResponse`), so you read a member's `code`/`name` for the rule from the
+same result — no second `get_meta_info` call.
 
 `coverage` tells you whether authoring is even needed: `builtin` / `user` /
 `project` means a specific rule already fires; `generic` means the auto path
@@ -69,8 +74,8 @@ is the one the auto path actually matches against, not a metadata guess.
 
 `explain_table` interprets *structure*, not data content: a time axis mixing
 calendar and fiscal years, or aggregate rows intermixed with detail, are
-member-level facts it does not flag — inspect the raw members via
-`get_meta_info` (and `aggregates=` / `select`) for those.
+member-level facts it does not flag — inspect the raw members it hands back on
+`exp.meta.class_objs` (and use `aggregates=` / `select`) for those.
 
 ## Columns: short and long form
 
@@ -163,7 +168,8 @@ above, written as YAML.
 
 - Relocate the directory with `project_rules_dir=`, or opt out with `None` /
   `""`.
-- An invalid rule file raises a typed `EstatError` at construction, so a typo
+- An invalid rule file raises a typed error at construction (a `RuleLoadError`,
+  a subclass of the public `EstatError` — catch it via `EstatError`), so a typo
   surfaces immediately rather than at query time.
 
 ## Advanced: folding a measure × period cross

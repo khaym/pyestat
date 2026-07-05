@@ -256,7 +256,9 @@ the classifier infers, so one rule covers every table sharing that role pattern.
 Not sure of a table's role pattern? `client.explain_table(id)` reports how
 pyestat reads it — the `role_pattern` your `match` must equal, each axis's role
 and confidence, which layer would handle it (a specific rule, the generic auto
-path, or the lossless fallback), and a proposed rule to hand-edit. Pivoting rows split across a `meta-axis`, naming columns for
+path, or the lossless fallback), and a proposed rule to hand-edit. It also hands
+back the table metadata it fetched (on `exp.meta`), so authoring reads a
+member's code from the same result without a separate `get_meta_info`. Pivoting rows split across a `meta-axis`, naming columns for
 `to_flat()`, and dropping rule files into a directory are covered in
 **[Writing rules →](https://github.com/khaym/pyestat/blob/main/docs/AUTHORING_RULES.md)**.
 

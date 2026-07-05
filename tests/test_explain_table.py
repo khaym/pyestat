@@ -28,7 +28,7 @@ from typing import Any
 
 import httpx
 
-from pyestat._endpoint import EstatClient
+from pyestat._endpoint import EstatClient, MetaInfoResponse
 from pyestat._http import EstatHttpClient
 
 
@@ -92,10 +92,6 @@ def _data(
     }
 
 
-def _by_id(exp: Any) -> dict[str, Any]:
-    return {a.axis_id: a for a in exp.axes}
-
-
 # A CPI-shaped table: a ``tab`` value-type axis (→ meta-axis), a plain category,
 # area, and a time axis mixing calendar/fiscal/monthly members.
 CPI_AXES = [
@@ -139,14 +135,36 @@ class TestExplainTable:
         exp = client.explain_table("0003427113")
 
         assert exp.role_pattern == ("meta-axis", "category", "area", "time")
-        axes = _by_id(exp)
-        assert axes["tab"].role == "meta-axis"
-        assert axes["tab"].confidence == "high"
-        assert axes["time"].role == "time"
-        assert axes["area"].role == "area"
+        roles = exp.roles
+        assert roles["tab"].role == "meta-axis"
+        assert roles["tab"].confidence == "high"
+        assert roles["time"].role == "time"
+        assert roles["area"].role == "area"
         assert len(captured) == 2
         assert captured[0].url.path.endswith("/getMetaInfo")
         assert captured[1].url.path.endswith("/getStatsData")
+
+    def test_returns_bundled_meta_and_roles_keyed_by_axis_id(self) -> None:
+        # explain_table already fetches metadata internally, so it returns it as
+        # ``meta``: an author reads the axes' member codes (for select or a rule)
+        # from the same result, with no second get_meta_info round-trip. The
+        # interpretation is ``roles``, keyed by the *same* axis id the facts use,
+        # so ``exp.roles[k]`` and ``exp.meta.class_objs`` speak one vocabulary.
+        client, captured = _make_client(_meta(CPI_AXES), _data(CPI_AXES, CPI_ROWS))
+
+        exp = client.explain_table("0003427113")
+
+        # facts: the metadata explain_table fetched, exposed for authoring
+        assert isinstance(exp.meta, MetaInfoResponse)
+        assert [co.id for co in exp.meta.class_objs] == ["tab", "cat01", "area", "time"]
+        assert exp.meta.class_objs[1].classes[0]["code"] == "0001"  # a member code
+        # interpretation keyed by the same ids as the facts (single vocabulary)
+        assert set(exp.roles) == {co.id for co in exp.meta.class_objs}
+        # AxisReading is role-only; id/name live on the facts, not duplicated here
+        assert not hasattr(exp.roles["tab"], "axis_id")
+        assert not hasattr(exp.roles["tab"], "name")
+        # no extra metadata round-trip beyond the internal meta + one data page
+        assert len(captured) == 2
 
     def test_measure_spread_meta_axis_reads_high_from_data(self) -> None:
         # cat02's unit-string-among-numerics split is confirmed from data, so it
@@ -155,7 +173,7 @@ class TestExplainTable:
 
         exp = client.explain_table("0004049327")
 
-        cat02 = _by_id(exp)["cat02"]
+        cat02 = exp.roles["cat02"]
         assert cat02.role == "meta-axis"
         assert cat02.confidence == "high"
         assert exp.role_pattern == ("category", "meta-axis", "area", "time")
@@ -183,7 +201,7 @@ class TestExplainTable:
 
         exp = client.explain_table("x")
 
-        assert _by_id(exp)["cat01"].role == "category"
+        assert exp.roles["cat01"].role == "category"
         assert exp.role_pattern == ("value", "category", "area", "time")
 
     def test_coverage_is_builtin_when_a_builtin_rule_matches(self) -> None:
@@ -233,7 +251,7 @@ class TestExplainTable:
 
         exp = client.explain_table("x")
 
-        cat02 = _by_id(exp)["cat02"]
+        cat02 = exp.roles["cat02"]
         assert cat02.role == "meta-axis"
         assert cat02.confidence == "high"
         assert exp.coverage == "fallback"
@@ -251,7 +269,7 @@ class TestExplainTable:
 
         exp = client.explain_table("x")
 
-        cat02 = _by_id(exp)["cat02"]
+        cat02 = exp.roles["cat02"]
         assert cat02.role == "meta-axis"
         assert cat02.confidence == "medium"  # lexicon inference, not data
         assert len(captured) == 2  # still attempted the data fetch

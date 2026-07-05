@@ -35,7 +35,7 @@ EVOLVING_HANDLES = {
     "load_builtin_rules",
     "RuleAuthoringError",
     "TableExplanation",
-    "AxisExplanation",
+    "AxisReading",
 }
 
 # Authoring leaf errors (and the rule-file load error) are deliberately kept

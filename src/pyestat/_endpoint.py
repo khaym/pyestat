@@ -128,14 +128,18 @@ class MetaInfoResponse:
 
 
 @dataclass(frozen=True)
-class AxisExplanation:
+class AxisReading:
     """How pyestat reads one axis: the role and confidence tier the classifier
     inferred, plus the signals behind them. ``role`` / ``confidence`` are the
     tier strings (``"time"``, ``"high"`` …), not enums, so the shape stays
-    stable as the internal classifier evolves."""
+    stable as the internal classifier evolves.
 
-    axis_id: str
-    name: str
+    Role-only by design. An axis's id, name, and members are *facts*, kept once
+    on :attr:`TableExplanation.meta` and keyed there by the same axis id this
+    annotation is looked up under — so the facts and their interpretation share
+    one vocabulary without duplicating id or name onto the role.
+    """
+
     role: str
     confidence: str
     signals: tuple[str, ...]
@@ -144,6 +148,18 @@ class AxisExplanation:
 @dataclass(frozen=True)
 class TableExplanation:
     """How pyestat reads a table — the authoring-time view of :meth:`EstatClient.explain_table`.
+
+    Bundles the *facts* it had to fetch with pyestat's *interpretation* of them,
+    so authoring a rule needs only this one result:
+
+    * :attr:`meta` — the :class:`MetaInfoResponse` ``explain_table`` fetched
+      anyway (axes with their ``id`` / ``name`` and members' ``code`` /
+      ``name``). Returned rather than discarded so an author reads a ``select``
+      code or a rule's member names from here, with no second
+      :meth:`EstatClient.get_meta_info` round-trip.
+    * :attr:`roles` — the per-axis interpretation, **keyed by the same axis id**
+      ``meta.class_objs`` uses (``exp.roles["cat01"]``). One vocabulary across
+      facts and interpretation; id and name are not repeated on the role.
 
     ``role_pattern`` is the ordered tuple a rule's ``match.role_pattern`` must
     equal to fire on this table. ``coverage`` names the layer that would apply
@@ -154,15 +170,15 @@ class TableExplanation:
     a hand-editing starting point, or ``None`` when none can be generated (an
     unknown axis, or a shape that must ride the fallback).
 
-    Deliberately an *interpretation* view: raw members live on
-    :class:`MetaInfoResponse` and are not duplicated here, and data hazards
-    (mixed granularities, aggregate rows) are left to the authoring dialog
-    reading those members — an open-ended set, not a fixed list baked in here.
+    An interpretation view over the facts: data hazards (mixed granularities,
+    aggregate rows) are left to the authoring dialog reading ``meta``'s members
+    — an open-ended set, not a fixed list baked in here.
     """
 
     stats_data_id: str
+    meta: MetaInfoResponse
     role_pattern: tuple[str, ...]
-    axes: tuple[AxisExplanation, ...]
+    roles: "Mapping[str, AxisReading]"
     coverage: str
     proposed_rule: "RuleV2 | None"
 
@@ -642,12 +658,16 @@ class EstatClient:
     def explain_table(self, stats_data_id: str) -> "TableExplanation":
         """Explain how pyestat reads a table, for authoring a rule.
 
-        Returns the classifier's role pattern and per-axis role / confidence,
-        the resolution layer that would cover the table, and a proposed generic
-        rule to hand-edit — the window that lets a rule author (or the authoring
-        Skill) learn a table's ``role_pattern`` (the key a
-        :class:`~pyestat.RuleV2` ``match`` must equal) instead of guessing it,
-        since the classifier is otherwise internal.
+        Returns pyestat's *interpretation* (role pattern, per-axis role /
+        confidence, the covering resolution layer, a proposed generic rule to
+        hand-edit) bundled with the *facts* it fetched — the
+        :class:`MetaInfoResponse` on :attr:`TableExplanation.meta` — so
+        authoring needs no second :meth:`get_meta_info`. It is the authoring
+        entry point: reach for it when ``rule="auto"`` output does not serve the
+        intent. The classifier is otherwise internal, so this window is what
+        lets a rule author (or the authoring Skill) learn a table's
+        ``role_pattern`` (the key a :class:`~pyestat.RuleV2` ``match`` must
+        equal) instead of guessing it.
 
         Classifies from a sample of the table's data (its first page), the same
         data-driven view ``rule="auto"`` uses at request time. Metadata alone
@@ -694,20 +714,19 @@ class EstatClient:
             # A generic rule as a hand-editing starting point, offered for the
             # covered layers too; ``None`` when the table cannot be structured.
             proposed_rule = build_generic_rule(classification, meta.class_objs)
-        axes = tuple(
-            AxisExplanation(
-                axis_id=axis.axis_id,
-                name=class_obj.name,
+        roles = {
+            class_obj.id: AxisReading(
                 role=axis.role.value,
                 confidence=axis.confidence.value,
                 signals=axis.signals,
             )
             for axis, class_obj in zip(classification.axes, meta.class_objs)
-        )
+        }
         return TableExplanation(
             stats_data_id=stats_data_id,
+            meta=meta,
             role_pattern=tuple(role.value for role in classification.role_pattern),
-            axes=axes,
+            roles=roles,
             coverage=coverage,
             proposed_rule=proposed_rule,
         )

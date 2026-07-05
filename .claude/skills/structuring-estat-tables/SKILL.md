@@ -38,8 +38,8 @@ user's intent — the examples below are illustrations, not a fixed checklist.
 ## Contents
 
 - [Setup](#setup) — the appId and client
-- [Flow](#flow) — 1 capture intent → 2 read the table → 3 diagnose pitfalls →
-  4 branch (narrow or author) → 5 author a rule → 6 confirm
+- [Flow](#flow) — 1 capture intent → 2 read the axes & codes → 3 diagnose
+  pitfalls → 4 branch (narrow or author) → 5 author a rule → 6 confirm
 - [Error handling](#error-handling)
 
 ## Setup
@@ -71,53 +71,53 @@ one. Its parameters are e-Stat's own search conditions (`searchWord`,
 names and rejects an unknown name rather than guessing. Table discovery is
 otherwise out of scope for this skill.
 
-### 2. Read how pyestat sees the table
-
-```python
-exp = client.explain_table(stats_data_id)
-exp.role_pattern    # e.g. ('meta-axis', 'category', 'area', 'time')
-exp.coverage        # 'builtin' | 'user' | 'project' | 'generic' | 'fallback'
-for a in exp.axes:
-    print(a.axis_id, a.name, a.role, a.confidence)
-exp.proposed_rule   # a RuleV2 starting point, or None
-```
-
-Explain in plain language what each axis *is* (time / area / category / a
-value-spread `meta-axis`) and what `coverage` means for them:
-
-- `builtin` / `user` / `project` — a specific rule already structures this table.
-- `generic` — no specific rule, but the auto path structures it from the
-  axis roles; `proposed_rule` shows what it produces.
-- `fallback` — the table is too ambiguous or not flatly structurable; the
-  auto path preserves raw rows (lossless), and a hand-written rule is what
-  turns it into clean columns.
-
-### 3. Diagnose the pitfalls (the core of this skill)
-
-Read the raw members and a small sample, then flag anything that would derail
-the user's intent. Most checks need only metadata:
+### 2. Read the table's axes and codes
 
 ```python
 meta = client.get_meta_info(stats_data_id)
 for axis in meta.class_objs:
     print(axis.id, axis.name, len(axis.classes))
-    # inspect axis.classes: each member has code / name / level / parentCode
+    # each member is a dict — index by key, not attribute:
+    #   axis.classes[0]["code"], ["name"], .get("level")
+    #   (some tables also carry parentCode / unit)
 ```
+
+Explain in plain language what each axis *is* (time / area / category / a
+value-spread `meta-axis`), then note that **these are the words `select` uses.**
+`select` is keyed by the axis `id` you just printed (`axis.id` — `cat01`,
+`area`, `time` …) and valued by a member's `code` — a single code, a list of
+codes, or a `{code, level, from, to}` spec (`code` is a dict key, e.g.
+`axis.classes[0]["code"]`). So reading the members here is also how you learn
+what to pass to `select` in steps 3–4 — pyestat exposes the same ids in
+`get_meta_info`, the parsed rows, and `select`, with no wire-only `cd` / `lv`
+prefix. (Deciding *how* pyestat structures the table — its role pattern and
+whether a rule already covers it — is deferred to step 5, `explain_table`, and is
+only needed if the auto output falls short.)
+
+### 3. Diagnose the pitfalls (the core of this skill)
+
+From the same members (step 2) and a small sample, flag anything that would
+derail the user's intent. Most checks need only the metadata already in hand.
 
 What to look for (examples, not a fixed list) — reason from the members:
 
-- **Time granularity mix.** e-Stat encodes calendar year as `YYYY000000`
-  (`2015年`), fiscal year as `YYYY100000` (`2015年度`), monthly as `YYYY00MMMM`.
-  If one `time` axis carries more than one of these — and especially if calendar
-  and fiscal sit at the same `level` — tell the user: filtering by `level` alone
-  will not separate them; they must choose which series they mean.
+- **Time axis mix.** e-Stat encodes calendar year as `YYYY000000` (`2015年`),
+  fiscal year as `YYYY100000` (`2015年度`), monthly as `YYYY00MMMM`. Two distinct
+  mixes hide here: a **granularity** mix (yearly vs monthly) and a **year-basis**
+  mix (暦年 vs 年度). The latter is *not* a granularity difference — both parse
+  as `yearly` (calendar → `2015`, fiscal → `2015-04`) — so it needs a different
+  check (see the snippet below). If one `time` axis carries more than one —
+  especially calendar and fiscal at the same `level` — filtering by `level`
+  alone will not separate them; the user must choose which series they mean.
 - **Aggregate vs. detail.** Members with a `parentCode` form a hierarchy; totals
   and their components coexist and will double-count if summed. pyestat's
   `aggregates="exclude"` / `"only"` selects one grain — confirm which the user
   wants.
-- **Unexpected value spread.** A `meta-axis` means several measures (quantity /
-  amount / unit …) are split across rows; the user gets one row per measure
-  unless the table is pivoted.
+- **Unexpected value spread.** A `meta-axis` holds several measures (quantity /
+  amount / unit …) spread across rows. The generic auto path **pivots them into
+  one column per measure** for you; the user gets one row per measure only when
+  the table rides the fallback (auto cannot pivot it) — that is when a hand rule
+  is needed (step 5).
 
 To see the actual values, fetch a **small** sample — narrow with `select` so the
 fetch stays tiny — and profile it:
@@ -131,8 +131,12 @@ resp = client.get_stats_data(
     select={"area": "00000"},   # narrow to keep the sample small
 )
 df = pd.DataFrame(resp.to_flat())
-df["time_granularity"].value_counts()   # spot a granularity mix in the data
-df["time"].head(20)                      # e.g. "2015" vs "2015-04"
+df["time_granularity"].value_counts()   # granularity mix only: yearly vs monthly
+# calendar vs fiscal is NOT a granularity difference — both are "yearly".
+# separate them by the normalized value / raw code / label instead:
+df["time"].head(20)          # "2015" (暦年) vs "2015-04" (年度)
+df["time_code"].head(20)     # ...000000 (暦年) vs ...100000 (年度)
+df["time_label"].head(20)    # "2015年" vs "2015年度"
 ```
 
 Report what you found plainly ("this annual slice contains both calendar-year
@@ -170,27 +174,51 @@ df = df[df["time"].str.fullmatch(r"\d{4}")]   # e.g. keep calendar years only
 fails an intent are open-ended; judge from the sample, not a fixed list. Some
 recurring shapes:
 
-- **Raw rows, no clean columns** (`coverage` is `fallback`): the table was too
-  ambiguous to flatten automatically.
+- **Raw rows, no clean columns**: the table was too ambiguous to flatten
+  automatically (it rode the lossless fallback; step 5's `coverage` confirms).
 - **Two same-role axes collapsed into one column** — 常住地 × 従業地, 建築主 ×
   用途. The role pattern matches (coverage may even be `builtin` / `generic`),
   but one role→column mapping cannot keep them apart; each needs its own column
   via `source.axis`.
 - **A measure spread down rows** — a `meta-axis` the auto path left unpivoted,
   so the user gets one row per measure instead of one column each.
-- **Unhelpful names** — the columns are complete and correct but named or
-  labeled so the intended slice is hard to read.
+- **Unhelpful column names** — the columns are complete and correct but their
+  *names* are hard to read; a rule can rename them. (Unhelpful *value* labels are
+  e-Stat's own — a rule cannot remap them; see step 5.)
 
 ### 5. Author a durable rule (only when needed)
 
+Now — and only now — call `explain_table` for pyestat's structural reading:
+
+```python
+exp = client.explain_table(stats_data_id)
+exp.role_pattern    # e.g. ('meta-axis', 'category', 'area', 'time')
+exp.coverage        # 'builtin' | 'user' | 'project' | 'generic' | 'fallback'
+exp.proposed_rule   # a RuleV2 starting point, or None
+for axis in exp.meta.class_objs:        # facts (already fetched, no second call)
+    print(axis.id, axis.name, exp.roles[axis.id].role)
+```
+
+`coverage` says what the auto path already does for this table:
+
+- `builtin` / `user` / `project` — a specific rule already structures it.
+- `generic` — no specific rule, but the auto path structures it from the axis
+  roles; `proposed_rule` shows what it produces.
+- `fallback` — too ambiguous or not flatly structurable; the auto path preserves
+  raw rows (lossless), and a hand-written rule turns them into clean columns.
+
 Start from `exp.proposed_rule` when it is present and refine it *with* the user;
 when it is `None` (a `fallback` table, or one no generic rule fits), build the
-rule from the `role_pattern` and axis roles `explain_table` reported. What you
-refine follows from why the auto output missed (step 4):
+rule from the `role_pattern` and axis roles `explain_table` reported. For the
+members a rule references, reuse the `meta` you already read in step 2 —
+`explain_table` returns the same metadata on `exp.meta`, so either works. What
+you refine follows from why the auto output missed (step 4):
 
 - **Two same-role axes collapsed** → give each its own column with `source.axis`.
 - **A measure spread down rows** → pivot the `meta-axis` with `where` / `key`.
-- **Unhelpful names** → set the column names and label maps.
+- **Unhelpful column names** → set each output `column` name. The per-value
+  labels are e-Stat's own, surfaced as `*_label` by `to_flat()`; a rule cannot
+  remap a code to a custom label (e.g. `110` → `male`).
 
 The RuleV2 schema (short vs long form, splitting same-role axes, pivoting a
 `meta-axis`, naming columns for `to_flat()`) is documented in
@@ -214,8 +242,8 @@ resp = EstatClient(app_id=os.environ["ESTAT_APP_ID"]).get_stats_data(
 pd.DataFrame(resp.to_flat()).head()
 ```
 
-A malformed rule raises a typed `RuleLoadError` at client construction — fix the
-YAML the message names and retry.
+A malformed rule raises a typed error at client construction (a `RuleLoadError`;
+catch it via the public `EstatError`) — fix the YAML the message names and retry.
 
 ### 6. Confirm
 
@@ -229,8 +257,12 @@ matches the intent from step 1. If a rule was saved, tell the user it lives in
   a short wait; do not treat it as a code failure.
 - **`TooManyRowsError`**: the fetch is too large — narrow with `select`, or pass
   `max_rows=` when the user accepts a partial fetch.
-- **`RuleLoadError`**: a saved/edited rule file is malformed; fix the file the
-  error names.
+- **No matching data** (`EstatApiError`, `status == 1`, 「正常に終了しましたが、該当
+  データはありませんでした」): a valid `select` matched zero rows — not a bug.
+  Widen or change the conditions. Genuine errors carry `status >= 100`.
+- **Malformed rule file** (a `RuleLoadError`, caught via the public
+  `EstatError`): a saved/edited rule file is malformed; fix the file the error
+  names.
 - **Missing `ESTAT_APP_ID`**: ask the user to set it; never fabricate one.
 - **Goal integrity**: if a fetch fails, say so — never present fabricated or
   stale data as if the table were structured successfully.
