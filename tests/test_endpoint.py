@@ -479,11 +479,12 @@ class TestGetMetaInfo:
 
 class TestListStats:
     def test_passes_search_params_through(self) -> None:
-        # ``list_stats`` is the table-discovery entrypoint; its parameters
-        # are forwarded raw because the e-Stat search API has many fields
-        # (statsCode, searchWord, surveyYears, ...) and modeling each in
-        # Python would just add a translation layer that lags behind the
-        # API documentation.
+        # ``list_stats`` is the table-discovery entrypoint. e-Stat's search
+        # vocabulary is a fixed set (searchWord, statsCode, surveyYears, ...),
+        # so pyestat forwards those names faithfully rather than renaming them
+        # — their meaning lives in the e-Stat manual, not restated here. The
+        # only behavior pyestat adds is the unknown-name guard the tests below
+        # pin.
         payload = {
             "GET_STATS_LIST": {
                 "RESULT": {"STATUS": 0, "ERROR_MSG": ""},
@@ -518,3 +519,31 @@ class TestListStats:
         resp = client.list_stats()
         assert len(resp.tables) == 1
         assert resp.tables[0]["@id"] == "Solo"
+
+    def test_rejects_unknown_param_before_any_request(self) -> None:
+        # A Python-idiomatic guess (snake_case ``search_word`` for e-Stat's
+        # ``searchWord``) would otherwise be forwarded raw; e-Stat ignores the
+        # unknown key and returns the *entire* catalog — an effective hang. The
+        # guard surfaces the mistake as a ValueError before any request is made.
+        client, captured = _make_client()  # no response queued: none is needed
+        with pytest.raises(ValueError, match="search_word"):
+            client.list_stats(search_word="人口")
+        assert captured == []  # the bad search never reached e-Stat
+
+    def test_error_names_every_unknown_param(self) -> None:
+        # Every offending name is reported so the user fixes them in one pass,
+        # not one failed round-trip at a time.
+        client, _ = _make_client()
+        with pytest.raises(ValueError) as excinfo:
+            client.list_stats(search_word="人口", stats_code="00200524")
+        msg = str(excinfo.value)
+        assert "search_word" in msg
+        assert "stats_code" in msg
+
+    def test_valid_param_mixed_with_unknown_still_rejected(self) -> None:
+        # A single bad name poisons the whole call: rejecting before send means
+        # a partially-correct search never silently degrades to a full fetch.
+        client, captured = _make_client()
+        with pytest.raises(ValueError, match="surveyYear"):
+            client.list_stats(searchWord="人口", surveyYear="2020")  # missing 's'
+        assert captured == []

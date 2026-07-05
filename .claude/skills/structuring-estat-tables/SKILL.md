@@ -65,7 +65,11 @@ it before continuing; do not invent one.
 Confirm two things in the user's own words: **what they want** (a metric, a
 region, a time span, a granularity) and **the `statsDataId`**. If they do not
 have an id, point them at e-Stat's search or `client.list_stats(...)` to find
-one — table discovery is otherwise out of scope for this skill.
+one. Its parameters are e-Stat's own search conditions (`searchWord`,
+`statsCode`, `surveyYears`, `collectArea` …); read the e-Stat API manual
+(getStatsList) for what each means — pyestat forwards them by their published
+names and rejects an unknown name rather than guessing. Table discovery is
+otherwise out of scope for this skill.
 
 ### 2. Read how pyestat sees the table
 

@@ -112,7 +112,10 @@ labels and values to their units; on top of that:*
 **Find the table you need**
 
 - Locate the table you want in the catalog by keyword or code — `list_stats`
-  (`searchWord`, `statsCode`, …).
+  takes e-Stat's own getStatsList parameters (`searchWord`, `statsCode`, …; see
+  the [e-Stat API manual](https://www.e-stat.go.jp/api/api-info/e-stat-manual3-0)
+  for their meaning). An unknown name is rejected up front, not sent silently —
+  which would return the entire catalog.
 - Check a table's axes (the codes you filter on) before you fetch it —
   `get_meta_info`.
 

@@ -238,6 +238,28 @@ def _check_status(result: Mapping[str, Any]) -> None:
 
 _SELECT_SPEC_KEYS = frozenset({"code", "level", "from", "to"})
 
+# e-Stat's fixed ``getStatsList`` search vocabulary (API manual, getStatsList
+# request parameters). ``appId`` is injected by the HTTP layer and ``callback``
+# is JSONP-only (incompatible with the JSON client), so neither is a
+# caller-settable search condition and both are intentionally excluded.
+_STATS_LIST_PARAMS = frozenset(
+    {
+        "lang",
+        "surveyYears",
+        "openYears",
+        "statsField",
+        "statsCode",
+        "searchWord",
+        "searchKind",
+        "collectArea",
+        "statsNameList",
+        "startPosition",
+        "limit",
+        "updatedDate",
+        "explanationGetFlg",
+    }
+)
+
 
 def _codes_param(axis_id: str, value: Any) -> str:
     """Comma-join one or more member codes, rejecting an empty or non-string
@@ -285,11 +307,11 @@ def _select_to_params(select: "Mapping[str, Any] | None") -> dict[str, str]:
     (``cat01`` → ``cdCat01``, ``time`` → ``cdTime``). The codes are passed
     through to e-Stat as-is: pyestat does not check them against the table's
     catalog (it stays stateless), so an unknown code is e-Stat's to answer —
-    normally with zero rows — the way ``list_stats`` forwards its params. Only
-    the *shape* is validated, and entirely client-side: a value that is not a
-    str / list / mapping, an empty or non-string code, or a mapping with an
-    unknown (or no) key raises :class:`ValueError` before any request, the way
-    :class:`EstatClient` rejects bad constructor arguments.
+    normally with zero rows. Only the *shape* is validated, and entirely
+    client-side: a value that is not a str / list / mapping, an empty or
+    non-string code, or a mapping with an unknown (or no) key raises
+    :class:`ValueError` before any request, the way :class:`EstatClient`
+    rejects bad constructor arguments.
     """
     if not select:
         return {}
@@ -430,9 +452,8 @@ class EstatClient:
         :meth:`get_meta_info`; ``select`` passes them through as-is — no label
         or year resolution, and no client-side catalog check, so the client
         stays stateless and an unknown code is e-Stat's to answer (normally
-        with zero rows), the way ``list_stats`` forwards its params. A
-        malformed ``select`` (empty or non-string code, unknown mapping key)
-        raises :class:`ValueError` before any request.
+        with zero rows). A malformed ``select`` (empty or non-string code,
+        unknown mapping key) raises :class:`ValueError` before any request.
 
         ``rule`` selects the transformation mode:
 
@@ -696,11 +717,24 @@ class EstatClient:
     def list_stats(self, **params: Any) -> StatsListResponse:
         """Search the e-Stat catalog.
 
-        Parameters are forwarded raw because the search API has many
-        rarely-used knobs (``searchWord``, ``statsCode``, ``surveyYears``,
-        ``openYears``, ``statsField``…); a Python-side enumeration
-        would lag behind the published API without adding safety.
+        Parameters are e-Stat's own ``getStatsList`` search conditions
+        (``searchWord``, ``statsCode``, ``surveyYears``, ``collectArea`` …),
+        forwarded faithfully under their published names — their meaning lives
+        in the e-Stat API manual (getStatsList request parameters), not restated
+        here. pyestat adds one guard only: an unknown parameter name raises a
+        :class:`ValueError` *before* any request. Without it a Python-idiomatic
+        typo (``search_word`` for ``searchWord``) would be sent verbatim, and
+        e-Stat — silently ignoring the unknown key — would return the entire
+        catalog, an effective hang.
         """
+        unknown = set(params) - _STATS_LIST_PARAMS
+        if unknown:
+            raise ValueError(
+                "list_stats received unknown search parameter(s): "
+                f"{', '.join(sorted(unknown))}. Valid e-Stat getStatsList "
+                f"parameters are: {', '.join(sorted(_STATS_LIST_PARAMS))}. "
+                "See the e-Stat API manual (getStatsList) for their meaning."
+            )
         payload = self._http.request("/getStatsList", params=params)
         root = payload["GET_STATS_LIST"]
         _check_status(root["RESULT"])

@@ -101,7 +101,9 @@ LLM エージェントや研究者は、`CLASS_INF` を手で突き合わせた�
 
 **必要な表を見つける**
 
-- 目的の表を、キーワードやコードでカタログから探す — `list_stats`（`searchWord` / `statsCode` など）。
+- 目的の表を、キーワードやコードでカタログから探す — `list_stats` は e-Stat の getStatsList パラメータ
+  （`searchWord` / `statsCode` など。意味は [e-Stat API マニュアル](https://www.e-stat.go.jp/api/api-info/e-stat-manual3-0) 参照）を
+  そのまま受け取る。未知の名前は黙って送らず即座に弾く（送ると全カタログが返る）。
 - 取得前に、表の軸（絞り込みに使うコード）を確かめる — `get_meta_info`。
 
 **手元のツールへ渡す**
