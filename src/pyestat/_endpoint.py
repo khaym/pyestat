@@ -128,6 +128,46 @@ class MetaInfoResponse:
 
 
 @dataclass(frozen=True)
+class AxisExplanation:
+    """How pyestat reads one axis: the role and confidence tier the classifier
+    inferred, plus the signals behind them. ``role`` / ``confidence`` are the
+    tier strings (``"time"``, ``"high"`` …), not enums, so the shape stays
+    stable as the internal classifier evolves."""
+
+    axis_id: str
+    name: str
+    role: str
+    confidence: str
+    signals: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class TableExplanation:
+    """How pyestat reads a table — the authoring-time view of :meth:`EstatClient.explain_table`.
+
+    ``role_pattern`` is the ordered tuple a rule's ``match.role_pattern`` must
+    equal to fire on this table. ``coverage`` names the layer that would apply
+    under ``rule="auto"``: ``"user"`` / ``"project"`` / ``"builtin"`` (a
+    specific rule already covers it), ``"generic"`` (Layer A structures it from
+    roles alone), or ``"fallback"`` (too low-confidence or unstructurable — the
+    lossless Layer D). ``proposed_rule`` is the Layer A generic rule offered as
+    a hand-editing starting point, or ``None`` when none can be generated (an
+    unknown axis, or a shape that must ride the fallback).
+
+    Deliberately an *interpretation* view: raw members live on
+    :class:`MetaInfoResponse` and are not duplicated here, and data hazards
+    (mixed granularities, aggregate rows) are left to the authoring dialog
+    reading those members — an open-ended set, not a fixed list baked in here.
+    """
+
+    stats_data_id: str
+    role_pattern: tuple[str, ...]
+    axes: tuple[AxisExplanation, ...]
+    coverage: str
+    proposed_rule: "RuleV2 | None"
+
+
+@dataclass(frozen=True)
 class StatsListResponse:
     """Result of :meth:`EstatClient.list_stats`.
 
@@ -576,6 +616,79 @@ class EstatClient:
             stats_data_id=stats_data_id,
             table_inf=dict(metadata.get("TABLE_INF", {})),
             class_objs=_parse_class_objs(metadata.get("CLASS_INF")),
+        )
+
+    def explain_table(self, stats_data_id: str) -> "TableExplanation":
+        """Explain how pyestat reads a table, for authoring a rule.
+
+        Returns the classifier's role pattern and per-axis role / confidence,
+        the resolution layer that would cover the table, and a proposed generic
+        rule to hand-edit — the window that lets a rule author (or the authoring
+        Skill) learn a table's ``role_pattern`` (the key a
+        :class:`~pyestat.RuleV2` ``match`` must equal) instead of guessing it,
+        since the classifier is otherwise internal.
+
+        Classifies from a sample of the table's data (its first page), the same
+        data-driven view ``rule="auto"`` uses at request time. Metadata alone
+        cannot reliably separate a measure-spread ``meta-axis`` from a plain
+        ``category`` — an axis merely *named* like a measure (数量 / 金額 / …)
+        would misclassify — so a metadata-only report would disagree with what
+        the auto path actually does, and a rule authored against it could fail
+        to match. A table that returns no data falls back to a metadata-only
+        reading.
+
+        Interprets *structure* only; it does not diagnose data content (a time
+        axis mixing calendar and fiscal years, aggregate rows intermixed with
+        detail) — read the raw members via :meth:`get_meta_info` for that.
+        """
+        # Lazy import keeps the L2 → L3 dependency one-way (see get_stats_data).
+        from pyestat._engine.classifier import classify
+        from pyestat._engine.pipeline import _stats_code_of
+        from pyestat._engine.resolver import RuleLayer, resolve_v2
+        from pyestat._engine.role_defaults import build_generic_rule
+
+        meta = self.get_meta_info(stats_data_id)
+        page = next(iter(self.iter_stats_data_pages(stats_data_id)), None)
+        # An empty page reads like no data: classifying an empty profile would
+        # push a lexicon-named meta-axis to ``category`` on zero observations,
+        # so fall back to a metadata-only reading instead.
+        rows = page.values if page is not None and page.values else None
+
+        classification = classify(meta.class_objs, meta.table_inf, rows=rows)
+        resolved = resolve_v2(
+            classification,
+            user=self._user_rules,
+            project=self._project_rules,
+            builtin=self._builtin_rules,
+            class_objs=meta.class_objs,
+            stats_data_id=stats_data_id,
+            stats_code=_stats_code_of(meta.table_inf),
+        )
+        coverage = resolved.layer.value if resolved is not None else "fallback"
+        if resolved is not None and resolved.layer is RuleLayer.GENERIC:
+            # resolve_v2 already built the generic rule; reuse it instead of
+            # recomputing the same pivot.
+            proposed_rule = resolved.rule
+        else:
+            # A generic rule as a hand-editing starting point, offered for the
+            # covered layers too; ``None`` when the table cannot be structured.
+            proposed_rule = build_generic_rule(classification, meta.class_objs)
+        axes = tuple(
+            AxisExplanation(
+                axis_id=axis.axis_id,
+                name=class_obj.name,
+                role=axis.role.value,
+                confidence=axis.confidence.value,
+                signals=axis.signals,
+            )
+            for axis, class_obj in zip(classification.axes, meta.class_objs)
+        )
+        return TableExplanation(
+            stats_data_id=stats_data_id,
+            role_pattern=tuple(role.value for role in classification.role_pattern),
+            axes=axes,
+            coverage=coverage,
+            proposed_rule=proposed_rule,
         )
 
     # ----- getStatsList -----

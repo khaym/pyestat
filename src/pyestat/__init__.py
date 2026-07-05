@@ -12,8 +12,10 @@ stability splits two ways:
   :class:`EstatApiError`, :class:`HttpRetryExhaustedError`,
   :class:`TooManyRowsError`, :class:`AmbiguousRuleError`.
 * **evolving** (may change during 0.x) — the rule-authoring path:
-  :class:`RuleV2`, :func:`load_builtin_rules`, and the
-  :class:`RuleAuthoringError` category. The rule schema is not frozen yet.
+  :class:`RuleV2`, :func:`load_builtin_rules`, the :class:`RuleAuthoringError`
+  category, and ``EstatClient.explain_table`` with its :class:`TableExplanation`
+  / :class:`AxisExplanation` view. The rule schema (and the classifier vocabulary
+  ``explain_table`` reports) are not frozen yet.
 
 The authoring *leaf* errors (``RoleResolutionError``, ``RuleExpansionError``,
 ``UnknownTransformError``, ``TimeFormatError``) and the rule-file
@@ -22,12 +24,14 @@ The authoring *leaf* errors (``RoleResolutionError``, ``RuleExpansionError``,
 stability promise; a coarse ``except EstatError`` catches them all regardless.
 """
 from pyestat._endpoint import (
+    AxisExplanation,
     ClassObj,
     EstatClient,
     MetaInfoResponse,
     Page,
     StatsDataResponse,
     StatsListResponse,
+    TableExplanation,
 )
 from pyestat._engine.builtin import load_builtin_rules
 from pyestat._engine.rule import RuleV2
@@ -44,6 +48,7 @@ from pyestat._http import EstatHttpClient, ProgressEvent
 
 __all__ = [
     "AmbiguousRuleError",
+    "AxisExplanation",
     "ClassObj",
     "EstatApiError",
     "EstatClient",
@@ -57,6 +62,7 @@ __all__ = [
     "RuleV2",
     "StatsDataResponse",
     "StatsListResponse",
+    "TableExplanation",
     "TooManyRowsError",
     "load_builtin_rules",
 ]

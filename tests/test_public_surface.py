@@ -30,7 +30,13 @@ SETTLED_ERRORS = {
     "TooManyRowsError",
     "AmbiguousRuleError",
 }
-EVOLVING_HANDLES = {"RuleV2", "load_builtin_rules", "RuleAuthoringError"}
+EVOLVING_HANDLES = {
+    "RuleV2",
+    "load_builtin_rules",
+    "RuleAuthoringError",
+    "TableExplanation",
+    "AxisExplanation",
+}
 
 # Authoring leaf errors (and the rule-file load error) are deliberately kept
 # off the top-level surface; they remain reachable via ``pyestat._errors``.

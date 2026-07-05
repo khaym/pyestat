@@ -39,6 +39,39 @@ selectors are tied to one survey's member names, so a structurally identical
 table from another family declines the rule rather than folding into empty rows.
 Omitted, the rule matches by role pattern alone.
 
+## Discovering a table's role pattern
+
+You don't have to guess the pattern. `explain_table` reports how `pyestat`
+classifies a table — the ordered `role_pattern` your `match` must equal, each
+axis's role and confidence, which layer would cover it, and a proposed rule to
+start from:
+
+```python
+exp = client.explain_table("0004049327")
+exp.role_pattern    # ('category', 'meta-axis', 'area', 'time')
+exp.coverage        # 'builtin' | 'user' | 'project' | 'generic' | 'fallback'
+exp.proposed_rule   # a RuleV2 to hand-edit, or None when none can be generated
+for a in exp.axes:
+    print(a.axis_id, a.role, a.confidence, a.signals)
+```
+
+`coverage` tells you whether authoring is even needed: `builtin` / `user` /
+`project` means a specific rule already fires; `generic` means the auto path
+structures it from roles alone (edit `proposed_rule` for different columns);
+`fallback` means the table is too low-confidence or unstructurable and rides the
+lossless Layer D until a rule covers it.
+
+It classifies from a sample of the table's data (its first page) — the same
+data-driven view `rule="auto"` uses. Metadata alone cannot reliably tell a
+measure-spread `meta-axis` from a plain `category` (an axis merely *named* like
+a measure, 数量 / 金額 / …, would misclassify), so the `role_pattern` it reports
+is the one the auto path actually matches against, not a metadata guess.
+
+`explain_table` interprets *structure*, not data content: a time axis mixing
+calendar and fiscal years, or aggregate rows intermixed with detail, are
+member-level facts it does not flag — inspect the raw members via
+`get_meta_info` (and `aggregates=` / `select`) for those.
+
 ## Columns: short and long form
 
 An output column has three fields: `column` (the output name), `source` (the
