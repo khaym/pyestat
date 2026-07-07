@@ -62,11 +62,15 @@ class HttpRetryExhaustedError(EstatError):
 
 
 class EstatApiError(EstatError):
-    """e-Stat returned ``RESULT.STATUS != 0``.
+    """e-Stat returned a genuine ``RESULT.STATUS`` error.
 
-    e-Stat reports query-level problems with HTTP 200 and a non-zero
-    ``RESULT.STATUS``; transport success does not imply a successful
-    query, so Layer 2 promotes that signal into an exception.
+    e-Stat reports query-level problems with HTTP 200 and a ``RESULT.STATUS``
+    error code; transport success does not imply a successful query, so Layer 2
+    promotes an error status into an exception. Per the e-Stat API manual the
+    error boundary is 100: ``STATUS`` 0-2 are normal completions and only
+    ``STATUS >= 100`` is an error. In particular ``STATUS == 1`` ("正常に終了し
+    ましたが、該当するデータはありませんでした") is *not* an error — it is a valid
+    empty result and Layer 2 returns 0 rows instead.
     """
 
     def __init__(self, *, status: int, message: str) -> None:

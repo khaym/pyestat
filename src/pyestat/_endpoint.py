@@ -1,8 +1,9 @@
 """Layer 2: Endpoint surface.
 
 Maps Python kwargs to e-Stat query parameters, parses the JSON response
-into typed dataclasses, raises :class:`EstatApiError` on
-``RESULT.STATUS != 0``, and walks ``NEXT_KEY`` pagination. Transport
+into typed dataclasses, raises :class:`EstatApiError` on a genuine
+``RESULT.STATUS`` error (a no-matching-data ``STATUS == 1`` is a valid
+empty result, not an error), and walks ``NEXT_KEY`` pagination. Transport
 mechanics (retry, timeout, ``appId`` injection) live in Layer 1.
 
 Out of scope here: rule matching, label substitution, standard-code
@@ -247,8 +248,18 @@ def _parse_class_objs(class_inf: Mapping[str, Any] | None) -> tuple[ClassObj, ..
 
 
 def _check_status(result: Mapping[str, Any]) -> None:
+    """Promote e-Stat's ``RESULT.STATUS`` into an exception on a genuine error.
+
+    The e-Stat API manual (spec 3.0) puts the error boundary at 100: ``STATUS``
+    0-2 are all normal completions and 100+ are errors (3-99 are unused). 0 is
+    success with data, 1 is success with *no* matching data (a valid empty slice
+    on a sparse cross-table, not a failure), and 2 is the ``getStatsDatas`` bulk
+    "no data for this request number" code. So only ``STATUS >= 100`` raises
+    :class:`EstatApiError`; a normal-but-empty body is left for the caller to
+    parse into a 0-row result.
+    """
     status = result.get("STATUS", 0)
-    if status != 0:
+    if status >= 100:
         raise EstatApiError(status=status, message=result.get("ERROR_MSG", ""))
 
 
@@ -528,7 +539,13 @@ class EstatClient:
             )
             root = payload["GET_STATS_DATA"]
             _check_status(root["RESULT"])
-            total = root["STATISTICAL_DATA"]["RESULT_INF"]["TOTAL_NUMBER"]
+            # A status=1 (no-matching-data) probe carries no STATISTICAL_DATA;
+            # read it as 0 rows so the guard passes and the fetch returns empty.
+            total = (
+                root.get("STATISTICAL_DATA", {})
+                .get("RESULT_INF", {})
+                .get("TOTAL_NUMBER", 0)
+            )
             if total > max_rows:
                 raise TooManyRowsError(
                     stats_data_id=stats_data_id, total=total, limit=max_rows
@@ -621,7 +638,9 @@ class EstatClient:
     def _parse_page(payload: Mapping[str, Any], page_number: int) -> Page:
         root = payload["GET_STATS_DATA"]
         _check_status(root["RESULT"])
-        sd = root["STATISTICAL_DATA"]
+        # status=1 (no matching data) may omit STATISTICAL_DATA entirely; a
+        # missing block parses to an empty page rather than a KeyError.
+        sd = root.get("STATISTICAL_DATA", {})
         result_inf = sd.get("RESULT_INF", {})
         next_key_raw = result_inf.get("NEXT_KEY")
         next_key = int(next_key_raw) if next_key_raw is not None else None

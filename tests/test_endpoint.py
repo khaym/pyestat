@@ -125,14 +125,16 @@ class TestParseStatsData:
         }
 
     def test_raises_estat_api_error_on_logical_failure(self) -> None:
-        # Non-zero RESULT.STATUS is e-Stat's way of saying "request was
-        # transported fine but rejected"; that distinction matters because
-        # retrying a logical error wastes the daily quota.
+        # A STATUS >= 100 is e-Stat's way of saying "request was transported
+        # fine but rejected" (here, a bad parameter); that distinction matters
+        # because retrying a logical error wastes the daily quota. STATUS == 1
+        # is *not* such a failure (see TestNoDataIsEmptyNotError) — only the
+        # genuine error range surfaces.
         client, _ = _make_client(_load_fixture("get_stats_data_error.json"))
         with pytest.raises(EstatApiError) as exc_info:
             client.get_stats_data("bad-id")
         assert exc_info.value.status == 100
-        assert "該当データ" in exc_info.value.message
+        assert "statsDataId" in exc_info.value.message
 
     def test_normalizes_single_value_dict_into_tuple(self) -> None:
         # e-Stat collapses a one-element VALUE array into a bare dict; if
@@ -433,6 +435,121 @@ class TestSelectNarrowsServerSide:
         with pytest.raises(ValueError):
             client.get_stats_data("T", select={"time": {"bogus": "x"}})
         assert captured == []
+
+
+class TestNoDataIsEmptyNotError:
+    """e-Stat reports ``RESULT.STATUS == 1`` — "正常に終了しましたが、該当する
+    データはありませんでした" — for a request that ran fine but matched no rows.
+    On a sparse cross-table an empty slice is normal, so pyestat surfaces it as a
+    0-row result, not an ``EstatApiError``: a caller can keep narrowing a
+    ``select`` without a valid empty slice reading as a bug. Only a genuine error
+    (STATUS >= 100) raises. The policy is uniform across every endpoint."""
+
+    def _empty_stats_data(
+        self, statistical_data: "dict[str, Any] | None"
+    ) -> dict[str, Any]:
+        root: dict[str, Any] = {
+            "RESULT": {
+                "STATUS": 1,
+                "ERROR_MSG": "正常に終了しましたが、該当するデータはありませんでした。",
+            }
+        }
+        if statistical_data is not None:
+            root["STATISTICAL_DATA"] = statistical_data
+        return {"GET_STATS_DATA": root}
+
+    def test_get_stats_data_returns_empty_response(self) -> None:
+        # The realistic shape: the table exists (CLASS_INF intact) but the
+        # select matched zero rows, so DATA_INF is absent.
+        client, _ = _make_client(_load_fixture("get_stats_data_empty.json"))
+        resp = client.get_stats_data("0003448237", select={"cat01": "999"})
+        assert isinstance(resp, StatsDataResponse)
+        assert resp.values == ()
+        assert resp.total_number == 0
+
+    def test_empty_response_survives_auto_rule(self) -> None:
+        # rule="auto" (the default) classifies the rows before applying a rule;
+        # zero rows must not crash the classify -> resolve -> apply pipeline.
+        client, _ = _make_client(_load_fixture("get_stats_data_empty.json"))
+        resp = client.get_stats_data("0003448237")  # default rule="auto"
+        assert resp.values == ()
+
+    def test_empty_when_statistical_data_absent(self) -> None:
+        # Defensive: even the minimal status=1 body (no STATISTICAL_DATA at
+        # all) yields an empty result, never a KeyError.
+        client, _ = _make_client(self._empty_stats_data(None))
+        resp = client.get_stats_data("T", rule=None)
+        assert resp.values == ()
+
+    def test_empty_when_class_inf_absent_under_auto(self) -> None:
+        # STATISTICAL_DATA present but no CLASS_INF/DATA_INF: rule="auto" must
+        # build a 0-row response from empty class_objs without raising.
+        client, _ = _make_client(
+            self._empty_stats_data({"RESULT_INF": {"TOTAL_NUMBER": 0}})
+        )
+        resp = client.get_stats_data("T")
+        assert resp.values == ()
+
+    def test_iter_pages_yields_one_empty_page(self) -> None:
+        client, _ = _make_client(self._empty_stats_data(None))
+        pages = list(client.iter_stats_data_pages("T"))
+        assert len(pages) == 1
+        assert pages[0].values == ()
+        assert pages[0].next_key is None
+
+    def test_count_probe_reads_zero_not_too_many_rows(self) -> None:
+        # With max_rows set, the cntGetFlg=Y probe runs first; a status=1 probe
+        # must read as 0 rows (<= any cap) — not raise, not KeyError — then the
+        # data fetch returns the empty result.
+        client, _ = _make_client(
+            self._empty_stats_data(None), self._empty_stats_data(None)
+        )
+        resp = client.get_stats_data("T", select={"cat01": "999"}, max_rows=100, rule=None)
+        assert resp.values == ()
+
+    def test_get_meta_info_returns_empty_meta(self) -> None:
+        # Uniform policy: status=1 is normal-empty everywhere, so get_meta_info
+        # returns an empty MetaInfoResponse rather than raising. (getMetaInfo has
+        # no row filter to come up empty in practice, so this is the defensive
+        # edge of the shared rule, not a common path.)
+        payload = {
+            "GET_META_INFO": {
+                "RESULT": {"STATUS": 1, "ERROR_MSG": "該当するデータはありませんでした。"}
+            }
+        }
+        client, _ = _make_client(payload)
+        meta = client.get_meta_info("T")
+        assert isinstance(meta, MetaInfoResponse)
+        assert meta.class_objs == ()
+
+    def test_list_stats_returns_empty_catalog(self) -> None:
+        payload = {
+            "GET_STATS_LIST": {
+                "RESULT": {"STATUS": 1, "ERROR_MSG": "該当するデータはありませんでした。"}
+            }
+        }
+        client, _ = _make_client(payload)
+        resp = client.list_stats(searchWord="存在しない統計名")
+        assert resp.tables == ()
+        assert resp.total_number == 0
+
+    def test_status_below_100_is_normal_not_an_error(self) -> None:
+        # The e-Stat API manual (spec 3.0) draws the line at 100: STATUS 0, 1,
+        # and 2 are all normal completions, 100+ are errors (3-99 are unused).
+        # STATUS 2 is the getStatsDatas "no data for this request number" code;
+        # pyestat does not use bulk fetch, but the boundary is the manual's, not
+        # a hand-picked {0, 1} set — so a sub-100 status must not raise. This
+        # pins the rule against regressing to "any non-zero other than 1 raises".
+        body = {"GET_STATS_DATA": {"RESULT": {"STATUS": 2, "ERROR_MSG": "該当なし"}}}
+        client, _ = _make_client(body)
+        resp = client.get_stats_data("T", rule=None)
+        assert resp.values == ()
+
+    def test_genuine_error_still_raises(self) -> None:
+        # STATUS >= 100 remains a surfaced EstatApiError on every path.
+        client, _ = _make_client(_load_fixture("get_stats_data_error.json"))
+        with pytest.raises(EstatApiError):
+            client.get_stats_data("bad-id", rule=None)
 
 
 # --- meta info -------------------------------------------------------------

@@ -15,14 +15,15 @@ never the reverse.
 1. **HTTP I/O** (`_http.py`) — `EstatHttpClient` wraps `httpx` with
    retry, timeout, and a `progress` callback. Knows nothing of e-Stat's
    meaning. Retries 5xx, connection failure, timeout, and the transient
-   408 / 429; e-Stat logical errors (HTTP 200 with `RESULT.STATUS != 0`)
+   408 / 429; e-Stat logical errors (HTTP 200 with a `RESULT.STATUS` error)
    fail immediately. The caller injects the e-Stat appId explicitly via
    `EstatClient(app_id=...)` (or `EstatHttpClient` directly); pyestat never
    reads it from the environment or a config file, leaving secret
    management to the caller, and a missing appId surfaces as a `ValueError`.
 2. **Endpoint** (`_endpoint.py`) — `EstatClient` maps kwargs to query
-   parameters, parses JSON, raises `EstatApiError` on a non-zero
-   `RESULT.STATUS`, and walks `NEXT_KEY` pages. Covers `getStatsData`,
+   parameters, parses JSON, raises `EstatApiError` on a genuine
+   `RESULT.STATUS` error (`STATUS == 1`, no-matching-data, is a valid empty
+   result, not an error), and walks `NEXT_KEY` pages. Covers `getStatsData`,
    `getMetaInfo`, `getStatsList`. A `cntGetFlg=Y` pre-flight enforces
    `max_rows` before any data page downloads (`TooManyRowsError`).
 3. **Rule engine** (`_engine/`) — classifies axes, resolves a rule, and

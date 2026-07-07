@@ -257,9 +257,12 @@ matches the intent from step 1. If a rule was saved, tell the user it lives in
   a short wait; do not treat it as a code failure.
 - **`TooManyRowsError`**: the fetch is too large — narrow with `select`, or pass
   `max_rows=` when the user accepts a partial fetch.
-- **No matching data** (`EstatApiError`, `status == 1`, 「正常に終了しましたが、該当
-  データはありませんでした」): a valid `select` matched zero rows — not a bug.
-  Widen or change the conditions. Genuine errors carry `status >= 100`.
+- **No matching data** (a valid `select` matched zero rows): e-Stat returns
+  `STATUS == 1`「正常に終了しましたが、該当するデータはありませんでした」, which
+  pyestat surfaces as an empty result, not an exception — `get_stats_data`
+  returns 0-row `values`, `list_stats` an empty `tables` — so this reads as a
+  0-row result, never a bug. Widen or change the conditions. Genuine errors
+  (`status >= 100`) still raise `EstatApiError`.
 - **Malformed rule file** (a `RuleLoadError`, caught via the public
   `EstatError`): a saved/edited rule file is malformed; fix the file the error
   names.

@@ -2,7 +2,7 @@
   "GET_STATS_DATA": {
     "RESULT": {
       "STATUS": 100,
-      "ERROR_MSG": "該当データが存在しません。",
+      "ERROR_MSG": "パラメータ「statsDataId」の指定に誤りがあります。",
       "DATE": "2026-05-17T03:00:00.000+09:00"
     },
     "PARAMETER": {
