@@ -264,6 +264,16 @@ member's code from the same result without a separate `get_meta_info`. Pivoting 
 
 > The `RuleV2` schema is evolving across 0.x — see [Status](#status).
 
+### Guided structuring with Claude Code
+
+If you use [Claude Code](https://claude.com/claude-code), this repo includes a
+skill, `structuring-estat-tables` (in `.claude/skills/`, not the PyPI package),
+that runs the whole flow for you conversationally — no Python or YAML required.
+It reads a table's axes and a data sample, flags e-Stat's structural traps (a
+time axis mixing calendar and fiscal years, aggregate rows that double-count
+detail), helps you pick the slice you actually mean, and drafts a conversion
+rule when no built-in rule covers the table. See [the skill](https://github.com/khaym/pyestat/blob/main/.claude/skills/structuring-estat-tables/SKILL.md).
+
 ## Error behavior
 
 On the default `rule="auto"` path, whether a *rule* failure reaches you

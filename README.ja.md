@@ -239,6 +239,15 @@ client = EstatClient(user_rules=[custom])
 
 > `RuleV2` スキーマは 0.x の間は変化しうります — [ステータス](#ステータス)を参照。
 
+### Claude Code でガイド付きで構造化する
+
+[Claude Code](https://claude.com/claude-code) を使っているなら、このリポジトリ内の
+スキル `structuring-estat-tables`（`.claude/skills/` にあり、PyPI パッケージには
+含まれません）が、一連の流れを対話で進めてくれます — Python も YAML も書かずに。
+表の軸とデータのサンプルを読み、e-Stat の構造的な落とし穴（暦年と年度が混ざる
+時間軸、詳細を二重計上する集計行）を洗い出し、本当に欲しいスライスを選ぶのを
+助け、組み込みルールが無い表では変換ルールを下書きします。[スキルを見る](https://github.com/khaym/pyestat/blob/main/.claude/skills/structuring-estat-tables/SKILL.md)。
+
 ## エラー時の挙動
 
 既定の `rule="auto"` 経路では、*ルール* の失敗が呼び出し側に届くかどうかは、その失敗した
